@@ -1,0 +1,9 @@
+# YOLOv11 멀티 채널 Qt 데모용 requirements
+# - DX 관련 패키지(dx-engine, dx-postprocess)는 DX-RT / DX-APP 설치로 제공된다고 가정
+# - 여기서는 PyPI 기준으로 설치 가능한 패키지만 명시
+
+numpy>=1.19.5
+opencv-python>=4.5.1
+packaging>=20.0
+PySide6>=6.5.0
+PyYAML>=6.0
