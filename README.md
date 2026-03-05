@@ -1,6 +1,6 @@
 # dx_demo
 
-A collection of multi-channel Qt demo applications for DeepX NPU inference.
+A collection of demo applications for DEEPX NPU inference.
 
 ## Demos
 
