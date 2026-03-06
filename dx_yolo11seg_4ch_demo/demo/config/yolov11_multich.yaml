@@ -21,13 +21,27 @@ channels:
     max_fps: 25
 
   - name: "ch3"
-    type: "rtsp"
-    source: "rtsp://192.168.30.100:8554/stream10"
+    type: "video"
+    source: "assets/videos/carrierbag.mp4"
     enabled: true
     max_fps: 25
 
   - name: "ch4"
-    type: "camera"
-    source: 0
+    type: "video"
+    source: "assets/videos/dance-group.mov"
     enabled: true
     max_fps: 25
+
+# rtsp example
+#  - name: "ch4"
+#    type: "rtsp"
+#    source: "rtsp://username:password@ip_address:port/stream"
+#    enabled: true
+#    max_fps: 25
+
+# camera example
+#  - name: "ch4"
+#    type: "camera"
+#    source: 0
+#    enabled: true
+#    max_fps: 25
