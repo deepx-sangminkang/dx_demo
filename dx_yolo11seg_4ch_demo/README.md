@@ -33,6 +33,14 @@ cd ../../../..
 
 > **Note:** `dx_postprocess` is a C++-based Python extension module that accelerates YOLO segmentation post-processing (`YOLOv8SegPostProcess`) and mask overlay (`overlay_segmentation`). Pixel-level operations that would bottleneck pure Python are handled in C++, enabling real-time multi-channel inference performance.
 
+### 3. Download sample videos
+
+```bash
+./setup.sh
+```
+
+This downloads the sample videos used by the demo into `assets/videos/`.
+
 ## Configuration
 
 Edit [`demo/config/yolov11_multich.yaml`](demo/config/yolov11_multich.yaml) to match your environment.

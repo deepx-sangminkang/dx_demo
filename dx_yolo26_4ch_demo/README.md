@@ -26,6 +26,14 @@ Refer to the DX-RT project documentation for installation and build instructions
 pip install -r requirements.txt
 ```
 
+### 2. Download sample videos
+
+```bash
+./setup.sh
+```
+
+This downloads the sample videos used by the demo into `assets/videos/`.
+
 ## Configuration
 
 Edit [`demo/config/yolo26_multich.yaml`](demo/config/yolo26_multich.yaml) to match your environment.
