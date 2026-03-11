@@ -1,11 +1,11 @@
-"""YOLOv11 멀티 채널용 추론 엔진.
+"""Inference engine for YOLOv11 multi-channel execution.
 
-`yolov11_async.py` 와는 **완전히 독립적인** 구현으로,
-멀티 채널 + 멀티 스레드 환경에서 사용하기 쉽게 설계한다.
+This implementation is **fully independent** of `yolov11_async.py`
+and is designed for convenient use in multi-channel, multi-threaded environments.
 
-- DX InferenceEngine 래핑
-- preprocess / postprocess / run_async / wait 제공
-- pad/gain 등 상태는 **self 에 저장하지 않고**, frame 별 meta 로 관리
+- Wraps DX InferenceEngine
+- Provides preprocess / postprocess / run_async / wait
+- Keeps state such as pad/gain out of `self` and manages it per frame in meta
 """
 
 from __future__ import annotations
@@ -21,22 +21,22 @@ from dx_postprocess import YOLOv8SegPostProcess, overlay_segmentation
 from packaging import version
 
 class YOLOv11Engine:
-    """멀티 채널에서 공용으로 사용할 YOLOv11 엔진.
+    """YOLOv11 engine shared across multiple channels.
 
-    - InferenceEngine 을 한 번만 생성해 여러 채널이 공유
-    - 멀티 스레드 환경에서도 안전하도록, 프레임별 meta 로 좌표 변환 정보 관리
+    - Builds InferenceEngine once and shares it across channels
+    - Stores coordinate-transform metadata per frame for thread safety
     """
 
     def __init__(self, model_path: str) -> None:
-        # DX-RT 버전 체크 (필요 시 main 쪽에서 한 번만 호출하도록 바꿔도 됨)
+        # Check the DX-RT version here, or move it to main if it should only run once.
         config = Configuration()
         if version.parse(config.get_version()) < version.parse("3.0.0"):
             raise RuntimeError(
-                "DX-RT v3.0.0 이상이 필요합니다. DX-RT 를 업데이트 해주세요."
+                "DX-RT v3.0.0 or later is required. Please update DX-RT."
             )
 
         if not os.path.exists(model_path):
-            raise FileNotFoundError(f"모델 파일을 찾을 수 없습니다: {model_path}")
+            raise FileNotFoundError(f"Model file not found: {model_path}")
 
         # # intra-op 1
         # config.set_enable(Configuration.ITEM.CUSTOM_INTRA_OP_THREADS, True)
@@ -50,20 +50,20 @@ class YOLOv11Engine:
         #                     Configuration.ATTRIBUTE.CUSTOM_INTER_OP_THREADS_NUM,
         #                     "1")
 
-        # DXNN 모델 로드
+        # Load the DXNN model
         self.ie = InferenceEngine(model_path)
 
         if version.parse(self.ie.get_model_version()) < version.parse("7"):
             raise RuntimeError(
-                ".dxnn 포맷 버전 7 이상이 필요합니다. DX-COM 을 업데이트 후 모델을 재컴파일 해주세요."
+                ".dxnn format version 7 or later is required. Please update DX-COM and recompile the model."
             )
 
         input_tensors_info = self.ie.get_input_tensors_info()
-        # (N, H, W, C) 또는 (N, C, H, W) 를 가정하고, 예제와 동일하게 인덱스 사용
+        # Assume (N, H, W, C) or (N, C, H, W), using the same indexing as the example.
         self.input_height = input_tensors_info[0]["shape"][1]
         self.input_width = input_tensors_info[0]["shape"][2]
 
-        # 탐지 관련 설정
+        # Detection settings
         self.score_threshold = 0.5
         self.nms_threshold = 0.45
 
@@ -75,7 +75,7 @@ class YOLOv11Engine:
             True
         )
 
-        # COCO80 클래스 이름 및 색상 팔레트
+        # COCO80 class names and colour palette
         self.classes = [
                         "person",
                         "bicycle",
@@ -161,24 +161,24 @@ class YOLOv11Engine:
         
         self.color_palette = np.random.uniform(0, 255, size=(len(self.classes), 3))
 
-        # 현재 in-flight 비동기 요청 개수를 추적하기 위한 카운터
+        # Track the number of async requests currently in flight
         self._inflight = 0
 
-    # ===== 전처리 관련 =====
+    # ===== Preprocessing =====
 
     def letterbox(
         self, img: np.ndarray, new_shape: Tuple[int, int]
     ) -> Tuple[np.ndarray, Tuple[int, int]]:
-        """원본 비율을 유지하면서 모델 입력 크기에 맞게 letterbox.
+                """Apply letterbox to fit the model input while preserving aspect ratio.
 
-        반환값:
-          - padding 이 적용된 이미지
-          - pad (top, left)
-        """
+                Returns:
+                    - image with padding applied
+                    - pad (top, left)
+                """
 
         shape = img.shape[:2]  # (h, w)
 
-        # 기존 예제와 동일한 비율 계산
+        # Use the same ratio calculation as the existing example
         r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
 
         new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
@@ -202,70 +202,70 @@ class YOLOv11Engine:
         return img, (top, left)
 
     def preprocess(self, frame_bgr: np.ndarray) -> Tuple[np.ndarray, Dict[str, Any]]:
-        """단일 프레임 전처리.
+                """Preprocess a single frame.
 
-        반환값:
-          - input_tensor: run_async 에 넣을 입력 텐서 (모델 입력 크기)
-          - meta: 후처리 시 필요한 정보 (원본 이미지 크기, pad, gain 등)
-        """
+                Returns:
+                    - input_tensor: input tensor passed to run_async (model input size)
+                    - meta: information needed for postprocess (original image size, pad, gain, etc.)
+                """
 
         img_height, img_width = frame_bgr.shape[:2]
 
-        # 단순 resize 전처리: 종횡비는 유지하지 않고, 입력 크기에 맞게 스케일링
-        # 좌표 변환 시에는 가로/세로 각각의 스케일 비율을 사용한다.
+        # Resize-only preprocess: ignore aspect ratio and scale directly to input size.
+        # Use separate horizontal and vertical scale factors during coordinate conversion.
         gain_y = self.input_height / img_height
         gain_x = self.input_width / img_width
 
         # BGR → RGB
         img_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
-        # letterbox 대신 단순 resize 만 적용
+        # Apply a simple resize instead of letterbox
         input_tensor = cv2.resize(
             img_rgb, (self.input_width, self.input_height), interpolation=cv2.INTER_LINEAR
         )
 
         meta: Dict[str, Any] = {
             "orig_shape": (img_height, img_width),  # (H, W)
-            # 종횡비를 유지하지 않고 resize 했으므로, 가로/세로 비율을 따로 저장한다.
+            # Aspect ratio is not preserved, so store separate horizontal and vertical ratios.
             "gain_x": gain_x,
             "gain_y": gain_y,
         }
         return input_tensor, meta
 
-    # ===== InferenceEngine 비동기 호출 =====
+    # ===== InferenceEngine async calls =====
 
     def run_async(self, input_tensor: np.ndarray) -> int:
-        """InferenceEngine.run_async 래핑.
+        """Wrapper around InferenceEngine.run_async.
 
-        - 멀티 채널에서 공용 InferenceEngine 을 사용.
+        - Uses the shared InferenceEngine across multiple channels.
         """
         req_id = self.ie.run_async([input_tensor])
 
-        # in-flight 카운터 증가
+        # Increment the in-flight counter
         self._inflight += 1
 
-        # 디버깅용으로 너무 자주 찍히지 않도록, 간단한 샘플링만 수행
-        # (예: 16개 단위로 증가할 때마다 한 번 출력)
+        # Use simple sampling for debugging to avoid logging too frequently.
+        # (For example, print once whenever the count increases by 16.)
         # print(f"[INF] InferenceEngine inflight requests: {self._inflight}")
 
         return req_id
 
     def wait(self, req_id: int) -> List[np.ndarray]:
-        """InferenceEngine.wait 래핑."""
+        """Wrapper around InferenceEngine.wait."""
         outputs = self.ie.wait(req_id)
 
-        # 요청 하나 완료되었으므로 in-flight 카운터 감소
+        # One request completed, so decrement the in-flight counter
         if self._inflight > 0:
             self._inflight -= 1
 
         return outputs
 
-    # ===== 후처리 관련 =====
+    # ===== Postprocessing =====
 
     def _raw_postprocess(self, output_tensors: List[np.ndarray]) -> np.ndarray:
-        """모델 출력 텐서에서 박스/클래스/스코어를 뽑는 부분.
+        """Extract boxes, classes, and scores from model output tensors.
 
-        - 좌표는 아직 모델 입력 좌표계 기준(x1, y1, x2, y2)
+        - Coordinates are still in the model-input coordinate space (x1, y1, x2, y2).
         """
 
         outputs = np.transpose(np.squeeze(output_tensors[0]))
@@ -287,7 +287,7 @@ class YOLOv11Engine:
             ]
         )
 
-        # NMS 를 위해 (left, top, width, height) 형태도 구성
+        # Also build (left, top, width, height) boxes for NMS
         boxes_x1y1wh = np.column_stack(
             [
                 boxes_x1y1x2y2[:, 0],
@@ -316,9 +316,9 @@ class YOLOv11Engine:
     def convert_to_original_coordinates(
         detections: np.ndarray, meta: Dict[str, Any]
     ) -> np.ndarray:
-        """모델 입력 좌표계를 원본 이미지 좌표계로 변환.
+        """Convert model-input coordinates to original-image coordinates.
 
-        - self 상태를 사용하지 않고, meta 에서 필요한 값을 읽어온다.
+        - Reads the required values from meta instead of using engine state.
         """
 
         if len(detections) == 0:
@@ -328,8 +328,8 @@ class YOLOv11Engine:
         gain_x = meta["gain_x"]
         gain_y = meta["gain_y"]
 
-        # 단순 resize 전처리에서는 padding 이 없고,
-        # 가로/세로 스케일 비율이 서로 다를 수 있으므로 각각을 사용해 역변환한다.
+        # Resize-only preprocessing has no padding,
+        # and horizontal/vertical scale factors may differ, so reverse them separately.
         detections[:, 0] = np.clip(
             detections[:, 0] / gain_x, 0, orig_w - 1
         )
@@ -350,31 +350,31 @@ class YOLOv11Engine:
         mask: np.ndarray,
         meta: Dict[str, Any],
     ) -> np.ndarray:
-        """단일 mask 를 모델 입력 해상도 → 시각화용 해상도로 변환.
+        """Convert a single mask from model-input resolution to visualisation resolution.
 
-        - mask: (H_in, W_in) uint8 또는 float
-        - meta: preprocess 에서 넘어온 orig_shape, gain_x, gain_y 포함
+        - mask: (H_in, W_in) uint8 or float
+        - meta: includes orig_shape, gain_x, and gain_y from preprocess
 
-        CES 데모 품질을 유지하면서 성능을 확보하기 위해,
-        원본 해상도 전체 대신 약 0.5x 수준의 중간 해상도로 변환한다.
+        To balance quality and performance for the CES demo,
+        convert to an intermediate resolution of roughly 0.5x instead of the full original size.
         """
 
         orig_h, orig_w = meta["orig_shape"]  # (H, W)
 
-        # mask 를 0~255 범위 uint8 로 정규화
+        # Normalise mask to uint8 in the 0..255 range
         if mask.dtype != np.uint8:
             mask = np.clip(mask, 0.0, 1.0)
             mask = (mask * 255.0).astype(np.uint8)
 
-        # resize-only 전처리에서는 pad 가 없으므로, mask 전체를 사용한다.
+        # Resize-only preprocessing has no padding, so use the full mask.
         in_h, in_w = mask.shape[:2]
 
-        # 시각화용 중간 해상도 (대략 0.5x 수준으로 조정)
-        # 너무 낮추면 계단 현상이 심해지므로, min 으로 하한도 함께 고려.
+        # Intermediate resolution for visualisation (roughly 0.5x).
+        # Keep a lower bound so aliasing does not become too severe.
         target_w = max(640, orig_w // 2)
         target_h = max(360, orig_h // 2)
 
-        # 중간 해상도로 리사이즈 후 이진화
+        # Resize to the intermediate resolution, then binarise
         resized = cv2.resize(mask, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
         _, mask_binary = cv2.threshold(resized, 127, 255, cv2.THRESH_BINARY)
 
@@ -385,10 +385,10 @@ class YOLOv11Engine:
         masks_input_space: np.ndarray,
         meta: Dict[str, Any],
     ) -> np.ndarray:
-        """여러 개의 mask 를 원본 이미지 해상도로 변환.
+        """Convert multiple masks to original-image resolution.
 
         - masks_input_space: (N, H_in, W_in)
-        - 반환: (N, orig_h, orig_w) uint8
+        - returns: (N, orig_h, orig_w) uint8
         """
 
         if masks_input_space is None or len(masks_input_space) == 0:
@@ -405,24 +405,24 @@ class YOLOv11Engine:
     def postprocess(
         self, output_tensors: List[np.ndarray], meta: Dict[str, Any]
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """네트워크 출력 텐서 후처리.
+        """Postprocess network output tensors.
 
-        - C++ YOLOv8SegPostProcess 로 bbox + mask 생성
-        - bbox/mask 를 모두 원본 이미지 좌표계/해상도로 변환
+        - Uses C++ YOLOv8SegPostProcess to produce bbox + mask results
+        - Converts both bbox and mask data to original-image coordinates/resolution
         """
 
-        # C++ postprocess 호출: (detections, masks) 튜플 반환
+        # Call C++ postprocess: returns a (detections, masks) tuple
         dets_input_space, masks_input_space = self.postprocessor.postprocess(
             output_tensors
         )
 
-        # bbox 를 원본 이미지 좌표계로 변환
+        # Convert bbox data to original-image coordinates
         dets_orig = self.convert_to_original_coordinates(
-            dets_input_space.copy(),  # in-place 수정이므로 copy 사용
+            dets_input_space.copy(),  # Use copy because the conversion modifies the array in place
             meta,
         )
 
-        # mask 를 원본 해상도로 변환
+        # Convert masks to original resolution
         masks_orig = self._transform_masks_to_original(
             masks_input_space,
             meta,
@@ -430,7 +430,7 @@ class YOLOv11Engine:
 
         return dets_orig, masks_orig
 
-    # ===== 시각화 =====
+    # ===== Visualisation =====
 
     def apply_segmentation_overlay(
         self,
@@ -439,13 +439,14 @@ class YOLOv11Engine:
         detections: np.ndarray,
         alpha: float = 0.5,
     ) -> np.ndarray:
-        """세그멘테이션 마스크를 반투명 오버레이로 적용.
+        """Apply segmentation masks as a semi-transparent overlay.
 
-        - image: BGR 원본 이미지 (H, W, 3) uint8
-        - masks: (N, H, W) uint8, 시각화 해상도
+        - image: original BGR image (H, W, 3) uint8
+        - masks: (N, H, W) uint8, visualisation resolution
         - detections: (N, 6) [x1,y1,x2,y2,score,class_id]
 
-        실제 연산은 C++ 확장 모듈(dx_postprocess.overlay_segmentation)에서 수행한다.
+        The actual pixel operation runs in the C++ extension module
+        (`dx_postprocess.overlay_segmentation`).
         """
 
         if masks is None or len(masks) == 0:
@@ -453,7 +454,7 @@ class YOLOv11Engine:
 
         img_h, img_w = image.shape[:2]
 
-        # C++ 쪽에서 H,W가 다르면 예외를 던지므로, 여기서 한 번 맞춰준다.
+        # The C++ side raises if H/W differ, so align them here first.
         if masks.shape[1] != img_h or masks.shape[2] != img_w:
             resized_masks = np.zeros((masks.shape[0], img_h, img_w), dtype=np.uint8)
             for i in range(masks.shape[0]):
@@ -464,7 +465,7 @@ class YOLOv11Engine:
         else:
             masks_for_overlay = masks
 
-        # detections 는 float32, palette 는 uint8 로 맞춰서 넘긴다.
+        # Pass detections as float32 and palette as uint8.
         dets = detections.astype(np.float32, copy=False)
         palette = self.color_palette.astype(np.uint8, copy=False)
 
@@ -476,15 +477,15 @@ class YOLOv11Engine:
         detections: np.ndarray,
         masks: np.ndarray | None = None,
     ) -> None:
-        """프레임 위에 bounding box + segmentation mask 시각화."""
+        """Draw bounding boxes and segmentation masks on a frame."""
 
-        # 1) 마스크 오버레이
+        # 1) Mask overlay
         if masks is not None and len(masks) > 0:
             img_overlay = self.apply_segmentation_overlay(img, masks, detections)
         else:
             img_overlay = img
 
-        # 2) bbox + 라벨 텍스트
+        # 2) Bounding boxes + label text
         for detection in detections:
             x1, y1, x2, y2, score, class_id = detection
 
@@ -525,6 +526,6 @@ class YOLOv11Engine:
                 cv2.LINE_AA,
             )
 
-        # 최종 결과를 원본 img 에 반영 (in-place)
+        # Apply the final result back to the original img (in-place)
         if img_overlay is not img:
             img[:, :, :] = img_overlay

@@ -5,7 +5,7 @@
 
 namespace py = pybind11;
 
-// 간단한 alpha blending 함수: dst = (1-a)*dst + a*src
+// Simple alpha blending helper: dst = (1-a)*dst + a*src
 static inline uint8_t alpha_blend_u8(uint8_t dst, uint8_t src, float alpha) {
     float d = static_cast<float>(dst);
     float s = static_cast<float>(src);
@@ -53,7 +53,7 @@ py::array_t<uint8_t> overlay_segmentation(
     if (pal_info.ndim != 2 || pal_info.shape[1] != 3)
         throw std::runtime_error("palette must be num_classes x 3");
 
-    // 출력 이미지: 원본 복사
+    // Output image: copy of the original input
     py::array_t<uint8_t> out({img_info.shape[0], img_info.shape[1], img_info.shape[2]});
     py::buffer_info out_info = out.request();
     std::memcpy(out_info.ptr, img_info.ptr, img_info.size * sizeof(uint8_t));
@@ -63,8 +63,8 @@ py::array_t<uint8_t> overlay_segmentation(
     auto det_ptr = static_cast<float*>(det_info.ptr);
     auto pal_ptr = static_cast<uint8_t*>(pal_info.ptr);
 
-    // 간단히: mask 해상도가 이미지와 다르면, 여기서는 전제만 두고
-    // Python 쪽에서 resize 해서 맞춰서 넘기도록 사용한다.
+    // Keep this simple: if the mask resolution differs from the image,
+    // require Python to resize it before passing it in.
     if (Hm != H || Wm != W) {
         throw std::runtime_error("overlay_segmentation expects masks with same H,W as image");
     }

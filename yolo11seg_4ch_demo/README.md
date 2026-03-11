@@ -1,4 +1,4 @@
-> 한국어 문서: [README-ko.md](README-ko.md)
+> Korean documentation: [README-ko.md](README-ko.md)
 
 # YOLOv11 Segmentation Multi-Channel Demo
 

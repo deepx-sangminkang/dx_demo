@@ -1,7 +1,8 @@
-"""멀티 채널 YOLOv11 파이프라인 워커/스레드 스켈레톤.
+"""Multi-channel YOLOv11 pipeline worker/thread skeleton.
 
-C 방식 아키텍처 (채널별 캡처 + 전역 pre/infer/post 워커)를 구현하기 위한 뼈대 코드.
-- 실제 로직은 간결하게 유지하고, 역할이 잘 드러나도록 한글 주석 위주로 작성.
+Skeleton code for a C-style architecture
+(per-channel capture + global pre/infer/post workers).
+- The runtime logic stays concise, with comments focused on making each role clear.
 """
 
 from __future__ import annotations
@@ -19,19 +20,19 @@ import numpy as np
 from .engine import YOLOv11Engine
 
 
-# ===== 단계별 드롭 카운트 (단순/직관적 버전) =====
+# ===== Per-stage drop counters (simple and direct version) =====
 
 # queue_drop_counts[stage][channel_id] = count
 queue_drop_counts: Dict[str, Dict[int, int]] = {
-    "input": defaultdict(int),      # input_queue (capture 단계)
-    "infer": defaultdict(int),      # infer_queue (preprocess 단계)
-    "post": defaultdict(int),       # post_queue (postprocess 단계)
-    "draw": defaultdict(int),       # draw_queue (draw 단계)
+    "input": defaultdict(int),      # input_queue (capture stage)
+    "infer": defaultdict(int),      # infer_queue (preprocess stage)
+    "post": defaultdict(int),       # post_queue (postprocess stage)
+    "draw": defaultdict(int),       # draw_queue (draw stage)
 }
 queue_drop_lock = threading.Lock()
 
 
-# ===== 단계별 처리량(throughput) 통계 =====
+# ===== Per-stage throughput stats =====
 
 throughput_stats: Dict[str, Dict[str, Any]] = {
     "read": {"first_ts": None, "last_ts": None, "count": 0},
@@ -44,9 +45,9 @@ throughput_lock = threading.Lock()
 
 
 def record_throughput(stage: str, ts: float) -> None:
-    """단계별 처리량 통계를 업데이트.
+    """Update throughput statistics for a pipeline stage.
 
-    - 첫 처리 시점(first_ts), 마지막 처리 시점(last_ts), 처리된 프레임 수(count)를 기록한다.
+    - Record the first timestamp, last timestamp, and processed frame count.
     """
 
     with throughput_lock:
@@ -60,7 +61,7 @@ def record_throughput(stage: str, ts: float) -> None:
 
 
 def get_fps(stage: str) -> float:
-    """저장된 통계로부터 해당 단계의 FPS 를 계산한다."""
+    """Compute FPS for the given stage from the recorded statistics."""
 
     with throughput_lock:
         s = throughput_stats.get(stage)
@@ -76,16 +77,16 @@ def get_fps(stage: str) -> float:
     return count / (last_ts - first_ts)
 
 
-# ===== 공용 큐에 넣을 데이터 구조 =====
+# ===== Data structures pushed into shared queues =====
 
 
 @dataclass
 class CaptureItem:
-    """캡처 스레드 → preprocess_worker 로 넘어가는 데이터.
+    """Data passed from a capture thread to preprocess_worker.
 
-    channel_id: 어느 채널에서 온 프레임인지 구분 용도
-    frame_bgr: 원본 BGR 프레임 (시각화용으로 보관)
-    meta: 타임스탬프 등 부가 정보
+    channel_id: identifies which channel produced the frame
+    frame_bgr: original BGR frame retained for visualisation
+    meta: auxiliary information such as timestamps
     """
 
     channel_id: int
@@ -95,7 +96,7 @@ class CaptureItem:
 
 @dataclass
 class InferItem:
-    """preprocess_worker → wait_worker 로 넘어가는 데이터."""
+    """Data passed from preprocess_worker to wait_worker."""
 
     channel_id: int
     frame_bgr: np.ndarray
@@ -106,7 +107,7 @@ class InferItem:
 
 @dataclass
 class OutputItem:
-    """wait_worker → postprocess_worker 로 넘어가는 데이터."""
+    """Data passed from wait_worker to postprocess_worker."""
 
     channel_id: int
     frame_bgr: np.ndarray
@@ -114,14 +115,14 @@ class OutputItem:
     meta: Dict[str, Any]
 
 
-# ===== 채널별 캡처 스레드 =====
+# ===== Per-channel capture thread =====
 
 
 class CaptureThread(threading.Thread):
-    """각 채널별로 하나씩 생성되는 캡처 스레드.
+    """Capture thread created once per channel.
 
-    - USB Cam / 비디오 파일 / RTSP 에서 프레임을 읽어 공용 input_queue 에 넣는다.
-    - DX 추론과 GUI 업데이트는 다른 워커/스레드에서 담당.
+    - Reads frames from a USB camera, video file, or RTSP and pushes them into input_queue.
+    - DX inference and GUI updates are handled by other workers/threads.
     """
 
     def __init__(
@@ -140,17 +141,17 @@ class CaptureThread(threading.Thread):
         self._stop_event = threading.Event()
 
     def stop(self) -> None:
-        """외부에서 스레드 종료 요청."""
+        """Request the thread to stop externally."""
 
         self._stop_event.set()
 
-    def run(self) -> None:  # pragma: no cover - 실제 런타임 전용
+    def run(self) -> None:  # pragma: no cover - runtime only
         cap = cv2.VideoCapture(self.source)
         if not cap.isOpened():
-            print(f"[ERROR] 채널 {self.channel_id}: 입력 소스를 열 수 없습니다 - {self.source}")
+            print(f"[ERROR] Channel {self.channel_id}: could not open input source - {self.source}")
             return
 
-        print(f"[INFO] 채널 {self.channel_id}: 캡처 시작 - {self.source}")
+        print(f"[INFO] Channel {self.channel_id}: capture started - {self.source}")
 
         min_interval = 1.0 / self.max_fps if self.max_fps and self.max_fps > 0 else 0.0
 
@@ -159,14 +160,14 @@ class CaptureThread(threading.Thread):
                 t0 = time.perf_counter()
                 ok, frame_bgr = cap.read()
                 if not ok:
-                    # 비디오 파일의 경우 끝까지 도달하면 다시 처음으로 되감아서 무한 반복 재생.
-                    # RTSP/카메라 등에서는 EOF 개념이 없거나 오류일 수 있지만,
-                    # 파일 경로(str) 입력이 일반적인 데모 시나리오이므로 우선 파일 기준으로 처리.
+                    # For video files, rewind to the beginning to loop forever at EOF.
+                    # RTSP/camera inputs do not really have EOF semantics and this may signal an error,
+                    # but file-path input is the typical demo scenario, so prioritise file behaviour here.
                     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     ok, frame_bgr = cap.read()
                     if not ok:
                         print(
-                            f"[INFO] 채널 {self.channel_id}: 프레임을 더 이상 읽을 수 없습니다 (EOF 또는 오류)"
+                            f"[INFO] Channel {self.channel_id}: no more frames can be read (EOF or error)"
                         )
                         break
 
@@ -181,32 +182,32 @@ class CaptureThread(threading.Thread):
                     meta=meta,
                 )
 
-                # 큐가 가득 찬 경우, 가장 오래된 프레임을 버리고 최신 프레임을 넣는 방식으로
-                # "실시간성"을 유지한다. 이렇게 하면 입력 FPS > 처리 FPS 인 상황에서도
-                # 뚝뚝 끊기는 느낌이 줄어들고, 항상 최신에 가까운 프레임이 화면에 표시된다.
+                # If the queue is full, drop the oldest frame and push the newest one
+                # to preserve real-time behaviour. This reduces stutter when input FPS
+                # exceeds processing FPS and keeps the display closer to the latest frame.
                 try:
                     self.input_queue.put(item, timeout=0.001)
                 except queue.Full:
                     try:
-                        # 하나 버리고 (오래된 프레임 제거)
+                        # Drop one item first (remove the oldest frame)
                         dropped_item = self.input_queue.get_nowait()
-                        # 캡처 단계에서 드롭된 프레임 카운트 증가
+                        # Increment the dropped-frame counter for the capture stage
                         with queue_drop_lock:
                             queue_drop_counts["input"][self.channel_id] += 1
                     except queue.Empty:
                         dropped_item = None
 
                     try:
-                        # 다시 최신 프레임을 넣는다.
+                        # Then push the newest frame.
                         self.input_queue.put_nowait(item)
                     except queue.Full:
-                        # 극단적인 상황에서는 조용히 스킵 (로그 남기지 않음)
+                        # In extreme cases, skip quietly without logging.
                         pass
 
-                # read 단계 처리량 기록 (성공적으로 큐에 넣은 경우에 한해)
+                # Record read-stage throughput only when the frame was queued successfully
                 record_throughput("read", time.time())
 
-                # FPS 제한이 설정된 경우 간단한 sleep 적용
+                # Apply a simple sleep if an FPS limit is configured
                 if min_interval > 0.0:
                     elapsed = time.perf_counter() - t0
                     remain = min_interval - elapsed
@@ -214,10 +215,10 @@ class CaptureThread(threading.Thread):
                         time.sleep(remain)
         finally:
             cap.release()
-            print(f"[INFO] 채널 {self.channel_id}: 캡처 종료")
+            print(f"[INFO] Channel {self.channel_id}: capture stopped")
 
 
-# ===== 전역 워커 스레드 함수 =====
+# ===== Global worker thread functions =====
 
 
 def preprocess_worker(
@@ -226,13 +227,13 @@ def preprocess_worker(
     infer_queue: "queue.Queue[InferItem]",
     stop_event: threading.Event,
 ) -> None:
-    """전역 전처리 + run_async 워커.
+    """Global preprocess + run_async worker.
 
-    - 여러 채널에서 들어오는 프레임을 하나의 큐에서 받아서 처리
-    - preprocess 후 run_async 를 호출하고, req_id 와 함께 infer_queue 로 넘김
+    - Consumes frames from multiple channels through a single queue.
+    - Runs preprocess, then run_async, and forwards req_id to infer_queue.
     """
 
-    while not stop_event.is_set():  # pragma: no cover - 런타임 전용
+    while not stop_event.is_set():  # pragma: no cover - runtime only
         try:
             item = input_queue.get(timeout=0.1)
         except queue.Empty:
@@ -243,7 +244,7 @@ def preprocess_worker(
         item.meta.update(meta_pre)
         item.meta["t_preprocess"] = time.perf_counter() - t0
 
-        # run_async 까지 포함해 전처리 단계 완료로 본다.
+        # Treat preprocess + run_async together as completion of the preprocess stage.
         req_id = engine.run_async(input_tensor)
         infer_item = InferItem(
             channel_id=item.channel_id,
@@ -253,13 +254,13 @@ def preprocess_worker(
             meta=item.meta,
         )
 
-        # infer_queue 가 가득 찬 경우, 가장 오래된 항목을 하나 버리고 최신 항목을 넣는다.
+        # If infer_queue is full, drop the oldest item and enqueue the newest one.
         try:
             infer_queue.put(infer_item, timeout=0.001)
         except queue.Full:
             try:
                 dropped_item = infer_queue.get_nowait()
-                # preprocess 단계(infer_queue)에서 드롭된 프레임 카운트 증가
+                # Increment the dropped-frame counter for the preprocess stage
                 with queue_drop_lock:
                     queue_drop_counts["infer"][dropped_item.channel_id] += 1
             except queue.Empty:
@@ -268,10 +269,10 @@ def preprocess_worker(
             try:
                 infer_queue.put_nowait(infer_item)
             except queue.Full:
-                # 극단적인 상황에서는 조용히 스킵 (로그 남기지 않음)
+                # In extreme cases, skip quietly without logging.
                 pass
 
-        # preprocess 단계 처리량 기록 (전처리 + run_async 완료 시점)
+        # Record preprocess-stage throughput when preprocess + run_async completes
         record_throughput("pre", time.time())
 
 
@@ -281,12 +282,12 @@ def wait_worker(
     post_queue: "queue.Queue[OutputItem]",
     stop_event: threading.Event,
 ) -> None:
-    """전역 wait/inference 워커.
+    """Global wait/inference worker.
 
-    - run_async 로 보낸 req_id 를 기다렸다가 output_tensors 를 받아 output_queue 로 넘김
+    - Waits for req_id values from run_async, retrieves output_tensors, and forwards them to output_queue.
     """
 
-    while not stop_event.is_set():  # pragma: no cover - 런타임 전용
+    while not stop_event.is_set():  # pragma: no cover - runtime only
         try:
             item = infer_queue.get(timeout=0.1)
         except queue.Empty:
@@ -303,13 +304,13 @@ def wait_worker(
             meta=item.meta,
         )
 
-        # post_queue 도 가득 찬 경우, 가장 오래된 항목을 하나 버리고 최신 항목을 넣는다.
+        # If post_queue is full, drop the oldest item and enqueue the newest one.
         try:
             post_queue.put(out_item, timeout=0.001)
         except queue.Full:
             try:
                 dropped_item = post_queue.get_nowait()
-                # post 단계(post_queue)에서 드롭된 프레임 카운트 증가
+                # Increment the dropped-frame counter for the postprocess stage
                 with queue_drop_lock:
                     queue_drop_counts["post"][dropped_item.channel_id] += 1
             except queue.Empty:
@@ -318,10 +319,10 @@ def wait_worker(
             try:
                 post_queue.put_nowait(out_item)
             except queue.Full:
-                # 극단적인 상황에서는 조용히 스킵 (로그 남기지 않음)
+                # In extreme cases, skip quietly without logging.
                 pass
 
-        # inference 단계 처리량 기록 (wait 완료 후 post_queue 에 넣은 시점)
+        # Record inference-stage throughput after wait completes and the item is queued for postprocess
         record_throughput("inf", time.time())
 
 
@@ -329,36 +330,36 @@ def postprocess_worker(
     engine: YOLOv11Engine,
     post_queue: "queue.Queue[OutputItem]",
     draw_queue: "queue.Queue[OutputItem]",
-    # selected_classes 는 GUI 쪽에서 관리하며, thread-safe 하게 읽을 수 있는 구조로 전달 예정
+    # selected_classes is managed on the GUI side and exposed through a thread-safe reader
     get_selected_classes,
     stop_event: threading.Event,
 ) -> None:
-    """전역 후처리 + 클래스 필터 워커.
+    """Global postprocess + class-filter worker.
 
-    - post_queue 에서 결과 텐서와 원본 프레임을 받아 후처리 수행
-    - 선택된 클래스만 남기고 draw_queue 로 넘김
+    - Receives result tensors and original frames from post_queue and postprocesses them.
+    - Keeps only the selected classes and forwards the result to draw_queue.
     """
 
-    while not stop_event.is_set():  # pragma: no cover - 런타임 전용
+    while not stop_event.is_set():  # pragma: no cover - runtime only
         try:
             item = post_queue.get(timeout=0.1)
         except queue.Empty:
             continue
         t0 = time.perf_counter()
-        # engine.postprocess 는 (detections, masks) 튜플 반환
+        # engine.postprocess returns a (detections, masks) tuple
         detections, masks = engine.postprocess(item.output_tensors, item.meta)
         # detections = np.ones((1, 6))
         # masks = np.ones((1, 640, 640), dtype=np.uint8)
         t1 = time.perf_counter()
 
-        # 현재 선택된 클래스 집합을 읽어와 필터링
+        # Read the currently selected class set and filter results
         selected_classes = get_selected_classes()
 
         if selected_classes is None:
             filtered_detections = detections
             filtered_masks = masks
         elif len(selected_classes) == 0:
-            # 아무 클래스도 선택되지 않은 경우 → 박스를 그리지 않음
+            # If no class is selected, draw nothing.
             filtered_detections = np.empty((0, 6), dtype=detections.dtype)
             filtered_masks = (
                 np.empty((0, *masks.shape[1:]), dtype=masks.dtype)
@@ -372,15 +373,15 @@ def postprocess_worker(
                 masks[cls_mask] if masks is not None and len(masks) > 0 else masks
             )
 
-        # 시각화용으로 너무 작은/점수 낮은 인스턴스는 생략하여 드로잉 부하를 줄인다.
-        MIN_AREA_TO_DRAW = 20 * 20  # 400px 미만 영역은 시각적으로 의미가 적다고 가정
+        # Skip instances that are too small / low-value for visualisation to reduce draw cost.
+        MIN_AREA_TO_DRAW = 20 * 20  # Assume areas smaller than 400px have little visual value
 
         if filtered_detections is not None and len(filtered_detections) > 0:
             keep_indices = []
             for idx, det in enumerate(filtered_detections):
                 x1, y1, x2, y2, score, _ = det
 
-                # 마스크가 있는 경우에는 실제 mask 픽셀 수로도 최소 크기 제한
+                # When a mask exists, also enforce the minimum size using real mask pixels
                 if (
                     filtered_masks is not None
                     and len(filtered_masks) > idx
@@ -390,7 +391,7 @@ def postprocess_worker(
                     if area < MIN_AREA_TO_DRAW:
                         continue
                 else:
-                    # 마스크가 없다면 bbox 면적 기준으로만 필터링
+                    # If no mask exists, filter using bbox area only
                     bbox_area = max(0.0, (x2 - x1)) * max(0.0, (y2 - y1))
                     if bbox_area < MIN_AREA_TO_DRAW:
                         continue
@@ -403,7 +404,7 @@ def postprocess_worker(
                 if filtered_masks is not None and len(filtered_masks) > 0:
                     filtered_masks = filtered_masks[keep_indices]
             else:
-                # 모두 필터링된 경우, 빈 배열로 설정
+                # If everything was filtered out, replace with empty arrays
                 filtered_detections = np.empty((0, 6), dtype=detections.dtype)
                 if filtered_masks is not None and len(filtered_masks) > 0:
                     filtered_masks = np.empty(
@@ -413,13 +414,13 @@ def postprocess_worker(
 
         t2 = time.perf_counter()
 
-        # meta 에 postprocess 타이밍 기록 (draw 는 draw_worker 에서 기록)
+        # Record postprocess timings in meta (draw timing is recorded in draw_worker)
         item.meta["t_postprocess"] = t2 - t0
         item.meta["t_post_engine"] = t1 - t0
         item.meta["t_post_filter"] = t2 - t1
         item.meta["t_post_draw"] = 0.0
 
-        # 필터링된 결과를 meta 에 잠시 보관하여 draw 단계로 넘긴다.
+        # Store filtered results temporarily in meta and forward them to the draw stage
         item.meta["detections"] = filtered_detections
         item.meta["masks"] = filtered_masks
 
@@ -438,7 +439,7 @@ def postprocess_worker(
             except queue.Full:
                 pass
 
-        # postprocess 단계 처리량 기록 (후처리 + 필터링 완료 후 draw_queue 로 보낸 시점)
+        # Record postprocess-stage throughput after postprocess + filtering completes and the item is queued for draw
         record_throughput("post", time.time())
 
 
@@ -448,15 +449,15 @@ def draw_worker(
     on_frame_ready,
     stop_event: threading.Event,
 ) -> None:
-    """전역 draw + GUI 전달 워커.
+        """Global draw + GUI forwarding worker.
 
-    - draw_queue 에서 프레임 + meta(detections/masks) 를 받아
-      draw_detections 를 호출하고 on_frame_ready 로 전달한다.
-    """
+        - Receives frame + meta(detections/masks) from draw_queue,
+            calls draw_detections, and forwards the result via on_frame_ready.
+        """
 
     last_log_ts = time.time()
 
-    while not stop_event.is_set():  # pragma: no cover - 런타임 전용
+    while not stop_event.is_set():  # pragma: no cover - runtime only
         try:
             item = draw_queue.get(timeout=0.1)
         except queue.Empty:
@@ -470,7 +471,7 @@ def draw_worker(
         t_draw1 = time.perf_counter()
 
         item.meta["t_post_draw"] = t_draw1 - t_draw0
-        # 전체 t_postprocess 는 post + draw 합으로 해석
+        # Interpret total t_postprocess as post + draw combined
         item.meta["t_postprocess"] = (
             item.meta.get("t_post_engine", 0.0)
             + item.meta.get("t_post_filter", 0.0)
@@ -479,6 +480,6 @@ def draw_worker(
 
         on_frame_ready(item.channel_id, item.frame_bgr, item.meta)
 
-        # draw 단계 처리량 기록 (프레임 시각화 및 GUI 전달까지 완료한 시점)
+        # Record draw-stage throughput after visualisation and GUI forwarding complete
         now = time.time()
         record_throughput("draw", now)

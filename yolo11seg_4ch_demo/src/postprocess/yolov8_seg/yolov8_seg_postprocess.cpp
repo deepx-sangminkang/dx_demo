@@ -84,7 +84,7 @@ std::vector<YOLOv8_SEGResult> YOLOv8_SEGPostProcess::postprocess(const dxrt::Ten
         msg << ", Expected (1, 116, 8400) and (1, 32, 160, 160).\n"
             << "Please re-compile the model with the correct output configuration.\n";
 
-        throw std::runtime_error(msg.str());  // 안전한 종료: 상위로 에러 전달
+        throw std::runtime_error(msg.str());  // Safe failure: propagate the error to the caller
     }
 
     std::vector<YOLOv8_SEGResult> detections;

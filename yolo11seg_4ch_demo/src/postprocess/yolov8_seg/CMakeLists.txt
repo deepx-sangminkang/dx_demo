@@ -62,12 +62,12 @@ set(COMMON_COMPILE_FLAGS -Wall -Wextra -O3 )
 # Common compile definitions
 set(COMMON_COMPILE_DEFINITIONS PROJECT_ROOT_DIR="${PROJECT_ROOT}")
 
-# yolov8_seg_postprocess 라이브러리 생성 (공유 라이브러리, .so 파일)
+# Create the yolov8_seg_postprocess library (shared library, .so file)
 if(SOURCES)
     add_library(yolov8_seg_postprocess SHARED ${SOURCES} ${HEADERS})
     target_link_libraries(yolov8_seg_postprocess PRIVATE ${COMMON_LIBS})
     
-    # 라이브러리 속성 설정
+    # Configure library properties
     set_target_properties(yolov8_seg_postprocess PROPERTIES
         OUTPUT_NAME "yolov8_seg_postprocess"
         POSITION_INDEPENDENT_CODE ON

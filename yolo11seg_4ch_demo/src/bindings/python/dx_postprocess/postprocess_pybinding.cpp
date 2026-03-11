@@ -50,18 +50,18 @@ dxrt::TensorPtrs numpy_to_dxrt_tensors(py::list ie_output) {
 
 py::tuple yolov8_seg_results_to_numpy(const std::vector<YOLOv8_SEGResult>& results) {
     const size_t num_results = results.size();
-    // detection 배열: [x1, y1, x2, y2, score, class_id]
+    // detection array: [x1, y1, x2, y2, score, class_id]
     py::array_t<float> detections(
         std::vector<py::ssize_t>{static_cast<py::ssize_t>(num_results), 6});
     auto det_buf = detections.mutable_unchecked<2>();
 
-    // mask 배열: (N, H, W) 또는 (0, 0, 0) when empty
+    // mask array: (N, H, W) or (0, 0, 0) when empty
     if (num_results == 0) {
         py::array_t<uint8_t> empty_masks(std::vector<py::ssize_t>{0, 0, 0});
         return py::make_tuple(detections, empty_masks);
     }
 
-    // 마스크 크기는 결과들 간에 동일하다고 가정 (postprocess 가 그렇게 채움)
+    // Assume all results use the same mask size (postprocess fills them that way)
     int mask_h = results[0].mask_height;
     int mask_w = results[0].mask_width;
     py::array_t<uint8_t> masks(
@@ -81,13 +81,13 @@ py::tuple yolov8_seg_results_to_numpy(const std::vector<YOLOv8_SEGResult>& resul
         det_buf(i, 4) = result.confidence;
         det_buf(i, 5) = static_cast<float>(result.class_id);
 
-        // mask 가 H*W 플랫 배열이라고 가정하고 uint8 로 변환
+        // Assume mask is a flat H*W array and convert it to uint8
         if (!result.mask.empty() && result.mask_height > 0 && result.mask_width > 0 &&
             static_cast<int>(result.mask.size()) == result.mask_height * result.mask_width) {
             for (int h = 0; h < result.mask_height; ++h) {
                 for (int w = 0; w < result.mask_width; ++w) {
                     float v = result.mask[h * result.mask_width + w];
-                    // 0/1 혹은 확률 값이라고 보고 0~255 로 스케일링
+                    // Treat the value as 0/1 or a probability and scale to 0..255
                     if (v < 0.0f) v = 0.0f;
                     else if (v > 1.0f) v = 1.0f;
                     uint8_t mv = static_cast<uint8_t>(v * 255.0f);
