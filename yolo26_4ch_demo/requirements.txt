@@ -1,0 +1,9 @@
+# Requirements for YOLO26 multi-channel Qt demo
+# - DX-related packages (dx-engine) are assumed to be provided by the DX-RT installation
+# - Only PyPI-installable packages are listed here
+
+numpy>=1.19.5
+opencv-python>=4.5.1
+packaging>=20.0
+PySide6>=6.5.0
+PyYAML>=6.0

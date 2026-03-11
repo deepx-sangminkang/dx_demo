@@ -6,8 +6,8 @@ A collection of demo applications for DEEPX NPU inference.
 
 | Demo | Model | Description |
 |------|-------|-------------|
-| [dx_yolo11seg_4ch_demo](dx_yolo11seg_4ch_demo/README.md) | YOLOv11 Segmentation | Real-time instance segmentation with mask overlay across up to 4 input channels |
-| [dx_yolo26_4ch_demo](dx_yolo26_4ch_demo/README.md) | YOLO26 Segmentation | Real-time segmentation with per-class BBOX toggle panel across up to 4 input channels |
+| [yolo11seg_4ch_demo](yolo11seg_4ch_demo/README.md) | YOLOv11 Segmentation | Real-time instance segmentation with mask overlay across up to 4 input channels |
+| [yolo26_4ch_demo](yolo26_4ch_demo/README.md) | YOLO26 Segmentation | Real-time segmentation with per-class BBOX toggle panel across up to 4 input channels |
 
 ## Prerequisites
 
@@ -24,10 +24,10 @@ import dx_engine
 
 ```bash
 # YOLOv11 Segmentation demo
-cd dx_yolo11seg_4ch_demo
+cd yolo11seg_4ch_demo
 
 # YOLO26 Segmentation demo
-cd dx_yolo26_4ch_demo
+cd yolo26_4ch_demo
 ```
 
 ### 2. Install dependencies
@@ -58,5 +58,5 @@ All demos support the following input types per channel:
 
 ## Demo Details
 
-- **[dx_yolo11seg_4ch_demo](dx_yolo11seg_4ch_demo/README.md)** — Uses a C++ Python binding (`dx_postprocess`) to accelerate pixel-level mask overlay operations for real-time multi-channel segmentation.
-- **[dx_yolo26_4ch_demo](dx_yolo26_4ch_demo/README.md)** — Features a class list panel in the Qt GUI with per-class checkboxes to toggle BBOX display individually.
+- **[yolo11seg_4ch_demo](yolo11seg_4ch_demo/README.md)** — Uses a C++ Python binding (`dx_postprocess`) to accelerate pixel-level mask overlay operations for real-time multi-channel segmentation.
+- **[yolo26_4ch_demo](yolo26_4ch_demo/README.md)** — Features a class list panel in the Qt GUI with per-class checkboxes to toggle BBOX display individually.
