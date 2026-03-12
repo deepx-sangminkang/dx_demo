@@ -1,4 +1,4 @@
-# dx_demo
+# DEEPX DX-DEMO
 
 A collection of demo applications for DEEPX NPU inference.
 
