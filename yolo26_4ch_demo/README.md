@@ -94,16 +94,18 @@ The demo shows per-stage frame drop counters in the title bar. Use them to ident
 
 ![Drop example](img/drop_example_capture.png)
 
+> The screenshot above shows `input drop` increasing — this means the preprocess workers cannot keep up with the capture rate. Increase `workers.preprocess` to resolve this.
+
 | Drop counter | Bottleneck | Action |
 |---|---|---|
-| `infer drop` | Preprocessing is too slow | Increase `workers.preprocess` |
-| `input drop` | Inference / waiting is too slow | Increase `workers.wait` |
+| `input drop` | Preprocess workers are too slow | Increase `workers.preprocess` |
+| `infer drop` | Inference wait workers are too slow | Increase `workers.wait` |
 | `draw drop` | Rendering is too slow | Increase `workers.draw` |
 
 ```yaml
 workers:
-  preprocess: 1   # increase if infer drop is high
-  wait: 1         # increase if input drop is high
+  preprocess: 1   # increase if input drop is high
+  wait: 1         # increase if infer drop is high
   draw: 1         # increase if draw drop is high
 ```
 

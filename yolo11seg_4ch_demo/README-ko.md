@@ -91,17 +91,19 @@ channels:
 
 ![드롭 예시](img/drop_example_capture.png)
 
+> 위 스크린샷은 `input drop`이 증가하는 예시입니다. 전처리 워커가 캡처 속도를 따라가지 못하는 상황으로, `workers.preprocess`를 늘려 해결할 수 있습니다.
+
 | 드롭 카운터 | 병목 지점 | 조치 |
 |---|---|---|
-| `infer drop` | 전처리가 느림 | `workers.preprocess` 증가 |
-| `input drop` | 추론/대기가 느림 | `workers.wait` 증가 |
+| `input drop` | 전처리 워커가 느림 | `workers.preprocess` 증가 |
+| `infer drop` | 추론 대기 워커가 느림 | `workers.wait` 증가 |
 | `post drop` | 후처리가 느림 | `workers.postprocess` 증가 |
 | `draw drop` | 렌더링이 느림 | `workers.draw` 증가 |
 
 ```yaml
 workers:
-  preprocess: 1   # infer drop이 높으면 증가
-  wait: 1         # input drop이 높으면 증가
+  preprocess: 1   # input drop이 높으면 증가
+  wait: 1         # infer drop이 높으면 증가
   postprocess: 2  # post drop이 높으면 증가
   draw: 1         # draw drop이 높으면 증가
 ```
