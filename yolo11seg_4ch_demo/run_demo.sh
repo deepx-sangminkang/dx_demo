@@ -1,6 +1,6 @@
 #!/bin/bash
 SCRIPT_DIR=$(realpath "$(dirname "$0")")
-cd "$SCRIPT_DIR"
+pushd "$SCRIPT_DIR" > /dev/null
 
 # Install missing Python dependencies from requirements.txt
 if pip install --dry-run -r requirements.txt 2>/dev/null | grep -q "Would install"; then
@@ -14,11 +14,12 @@ if ! pip list 2>/dev/null | grep -qi "dx-postprocess-seg"; then
     pip install src/bindings/python/dx_postprocess/
 fi
 
-# Download sample videos if not present
-if [ ! "$(ls -A assets/videos/ 2>/dev/null)" ]; then
-    echo "[INFO] Sample videos not found. Running setup.sh..."
+# Download model and sample videos if not present
+if [ ! -f "assets/models/yolo11s-seg_optim.dxnn" ] || [ ! "$(ls -A assets/videos/ 2>/dev/null)" ]; then
+    echo "[INFO] Model or sample videos not found. Running setup.sh..."
     ./setup.sh
 fi
 
 echo "[INFO] Starting demo..."
 python -m demo.main "$@"
+popd > /dev/null
