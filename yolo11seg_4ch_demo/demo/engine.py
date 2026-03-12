@@ -169,16 +169,16 @@ class YOLOv11Engine:
     def letterbox(
         self, img: np.ndarray, new_shape: Tuple[int, int]
     ) -> Tuple[np.ndarray, Tuple[int, int]]:
-                """Apply letterbox to fit the model input while preserving aspect ratio.
+        """Apply letterbox to fit the model input while preserving aspect ratio.
 
-                Returns:
-                    - image with padding applied
-                    - pad (top, left)
-                """
+        Returns:
+          - image with padding applied
+          - pad (top, left)
+        """
 
         shape = img.shape[:2]  # (h, w)
 
-        # Use the same ratio calculation as the existing example
+        # Use the same ratio calculation as the existing example.
         r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
 
         new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
@@ -202,12 +202,12 @@ class YOLOv11Engine:
         return img, (top, left)
 
     def preprocess(self, frame_bgr: np.ndarray) -> Tuple[np.ndarray, Dict[str, Any]]:
-                """Preprocess a single frame.
+        """Preprocess a single frame.
 
-                Returns:
-                    - input_tensor: input tensor passed to run_async (model input size)
-                    - meta: information needed for postprocess (original image size, pad, gain, etc.)
-                """
+        Returns:
+          - input_tensor: input tensor passed to run_async (model input size)
+          - meta: information needed for postprocess (original image size, pad, gain, etc.)
+        """
 
         img_height, img_width = frame_bgr.shape[:2]
 
@@ -216,12 +216,14 @@ class YOLOv11Engine:
         gain_y = self.input_height / img_height
         gain_x = self.input_width / img_width
 
-        # BGR → RGB
+        # BGR -> RGB
         img_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
-        # Apply a simple resize instead of letterbox
+        # Apply a simple resize instead of letterbox.
         input_tensor = cv2.resize(
-            img_rgb, (self.input_width, self.input_height), interpolation=cv2.INTER_LINEAR
+            img_rgb,
+            (self.input_width, self.input_height),
+            interpolation=cv2.INTER_LINEAR,
         )
 
         meta: Dict[str, Any] = {

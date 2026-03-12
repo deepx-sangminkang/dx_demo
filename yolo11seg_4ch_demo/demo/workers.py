@@ -449,11 +449,11 @@ def draw_worker(
     on_frame_ready,
     stop_event: threading.Event,
 ) -> None:
-        """Global draw + GUI forwarding worker.
+    """Global draw + GUI forwarding worker.
 
-        - Receives frame + meta(detections/masks) from draw_queue,
-            calls draw_detections, and forwards the result via on_frame_ready.
-        """
+    - Receives frame + meta(detections/masks) from draw_queue,
+      calls draw_detections, and forwards the result via on_frame_ready.
+    """
 
     last_log_ts = time.time()
 

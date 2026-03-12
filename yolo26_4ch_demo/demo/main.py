@@ -223,6 +223,8 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_row = QtWidgets.QHBoxLayout()
         self.btn_select_all = QtWidgets.QPushButton("Select All")
         self.btn_clear_all = QtWidgets.QPushButton("Clear All")
+        self.btn_select_all.clicked.connect(self._on_select_all)
+        self.btn_clear_all.clicked.connect(self._on_clear_all)
         btn_row.addWidget(self.btn_select_all)
         btn_row.addWidget(self.btn_clear_all)
         btn_row.addStretch(1)
@@ -287,20 +289,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.class_list_layout.insertWidget(
                 self.class_list_layout.count() - 1, cb
             )
-
-        # Connect select-all / clear-all buttons (disconnect first to avoid duplicate connections)
-        try:
-            self.btn_select_all.clicked.disconnect()
-        except TypeError:
-            # Disconnecting when there is no connection may raise TypeError
-            pass
-        try:
-            self.btn_clear_all.clicked.disconnect()
-        except TypeError:
-            pass
-
-        self.btn_select_all.clicked.connect(self._on_select_all)
-        self.btn_clear_all.clicked.connect(self._on_clear_all)
 
         # Build the selected-class set once based on the initial state (all checked)
         self._rebuild_selected_classes()

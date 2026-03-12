@@ -44,13 +44,13 @@ from demo.workers import (
 
 
 class VideoWidget(QtWidgets.QWidget):
-        """Widget that displays video for a single channel.
+    """Widget that displays video for a single channel.
 
-        - `set_frame(np.ndarray)` stores only the latest frame,
-            and actual drawing happens in `paintEvent`.
-        - This avoids excessive external repaint requests and enables smooth,
-            timer-driven updates.
-        """
+    - `set_frame(np.ndarray)` stores only the latest frame,
+      and actual drawing happens in `paintEvent`.
+    - This avoids excessive external repaint requests and enables smooth,
+      timer-driven updates.
+    """
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
@@ -227,6 +227,8 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_row = QtWidgets.QHBoxLayout()
         self.btn_select_all = QtWidgets.QPushButton("Select All")
         self.btn_clear_all = QtWidgets.QPushButton("Clear All")
+        self.btn_select_all.clicked.connect(self._on_select_all)
+        self.btn_clear_all.clicked.connect(self._on_clear_all)
         btn_row.addWidget(self.btn_select_all)
         btn_row.addWidget(self.btn_clear_all)
         btn_row.addStretch(1)
@@ -291,20 +293,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.class_list_layout.insertWidget(
                 self.class_list_layout.count() - 1, cb
             )
-
-        # Connect select-all / clear-all buttons (first disconnect to avoid duplicate connections)
-        try:
-            self.btn_select_all.clicked.disconnect()
-        except TypeError:
-            # disconnect can raise TypeError when there is no existing connection
-            pass
-        try:
-            self.btn_clear_all.clicked.disconnect()
-        except TypeError:
-            pass
-
-        self.btn_select_all.clicked.connect(self._on_select_all)
-        self.btn_clear_all.clicked.connect(self._on_clear_all)
 
         # Build the selected-class set once using the initial all-checked state
         self._rebuild_selected_classes()
@@ -680,18 +668,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @QtCore.Slot(int, object, dict)
     def on_frame_ready(self, channel_id: int, frame_bgr: np.ndarray, meta: Dict[str, Any]) -> None:
-                """Handle the frame_ready signal and update the VideoWidget.
+        """Handle the frame_ready signal and update the VideoWidget.
 
-                - Even if many frame_ready signals arrive in a burst,
-                    only the latest frame per channel is applied to the screen.
-                """
+        - Even if many frame_ready signals arrive in a burst,
+          only the latest frame per channel is applied to the screen.
+        """
 
-                # Refresh the latest frame/meta for this channel
+        # Refresh the latest frame/meta for this channel
         with self._latest_lock:
             self._latest_frames[channel_id] = frame_bgr
             self._latest_meta[channel_id] = meta
 
-                # Update the widget using the latest frame available at this moment
+        # Update the widget using the latest frame available at this moment
         if 0 <= channel_id < len(self.video_widgets):
             latest_frame = None
             latest_meta = None
