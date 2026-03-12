@@ -667,39 +667,56 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ----- Shutdown -----
 
+    def _join_alive_threads(self, threads: List[Any], timeout: float) -> None:
+        """Join only threads that still exist and are running."""
+
+        for thread in threads:
+            if thread and thread.is_alive():
+                thread.join(timeout=timeout)
+
+    def _stop_capture_threads(self) -> None:
+        """Request capture threads to stop and wait briefly for exit."""
+
+        for thread in self.capture_threads:
+            if thread:
+                thread.stop()
+
+        self._join_alive_threads(self.capture_threads, timeout=2.0)
+
+    def _worker_queues(self) -> List["queue.Queue[Any]"]:
+        """Return queues that need sentinel values during shutdown."""
+
+        return [self.input_queue, self.infer_queue, self.draw_queue]
+
+    def _stop_worker_threads(self) -> None:
+        """Push sentinel values and wait for worker threads to exit."""
+
+        threads = getattr(self, "_threads", [])
+        for _ in range(len(threads)):
+            for work_queue in self._worker_queues():
+                try:
+                    work_queue.put_nowait(None)
+                except queue.Full:
+                    pass
+
+        self._join_alive_threads(threads, timeout=1.0)
+
+    def _cleanup_engine(self) -> None:
+        """Release the engine if it was created."""
+
+        if hasattr(self, "engine") and self.engine:
+            del self.engine
+
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # pragma: no cover
         """Clean up worker and capture threads when the window closes."""
         print("[INFO] Shutting down...")
-        
-        # 1. Send stop signal to all threads
+
         self.stop_event.set()
-        for t in self.capture_threads:
-            if t:
-                t.stop()
-        
-        # 2. Wait for capture threads to finish
-        for t in self.capture_threads:
-            if t and t.is_alive():
-                t.join(timeout=2.0)
-        
-        # 3. Send stop signal to worker threads (via None sentinel)
-        if hasattr(self, '_threads'):
-            for _ in range(len(self._threads)):
-                for q in [self.input_queue, self.infer_queue, self.draw_queue]:
-                    try:
-                        q.put_nowait(None)
-                    except queue.Full:
-                        pass
-        
-            # 4. Wait for worker threads to finish
-            for t in self._threads:
-                if t and t.is_alive():
-                    t.join(timeout=1.0)
-        
-        # 5. Clean up engine
-        if hasattr(self, 'engine') and self.engine:
-            del self.engine
-        
+
+        self._stop_capture_threads()
+        self._stop_worker_threads()
+        self._cleanup_engine()
+
         print("[INFO] Shutdown complete")
         event.accept()
 
