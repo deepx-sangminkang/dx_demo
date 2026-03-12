@@ -9,6 +9,16 @@ A collection of demo applications for DEEPX NPU inference.
 | [yolo11seg_4ch_demo](yolo11seg_4ch_demo/README.md) | YOLOv11 Segmentation | Real-time instance segmentation with mask overlay across up to 4 input channels |
 | [yolo26_4ch_demo](yolo26_4ch_demo/README.md) | YOLO26 Segmentation | Real-time segmentation with per-class BBOX toggle panel across up to 4 input channels |
 
+## Screenshots
+
+### YOLOv11 Segmentation Demo
+
+![YOLOv11 Segmentation Demo Screenshot](yolo11seg_4ch_demo/img/yolov11seg_4ch_demo_screenshot.png)
+
+### YOLO26 Segmentation Demo
+
+![YOLO26 Segmentation Demo Screenshot](yolo26_4ch_demo/img/yolo26_4ch_demo_screenshot.png)
+
 ## Prerequisites
 
 All demos require **DX-RT** (DeepX Runtime) to be built and installed before use.

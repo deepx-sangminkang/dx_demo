@@ -7,6 +7,10 @@ A multi-channel Qt demo application using the YOLO26 segmentation model.
 - The Qt GUI has a **class list panel** on the right side, where each class has a checkbox
   to individually control whether the BBOX for that class is displayed.
 
+## Screenshot
+
+![YOLO26 Segmentation Demo Screenshot](img/yolo26_4ch_demo_screenshot.png)
+
 ## Prerequisites
 
 Before running this project, **DX-RT** (DeepX Runtime) must be built and the `dx_engine` module must be importable in Python.

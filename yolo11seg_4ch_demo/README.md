@@ -4,6 +4,10 @@
 
 A multi-channel Qt demo application using the YOLOv11 segmentation model.
 
+## Screenshot
+
+![YOLOv11 Segmentation Demo Screenshot](img/yolov11seg_4ch_demo_screenshot.png)
+
 ## Prerequisites
 
 Before running this project, **DX-RT** (DeepX Runtime) must be built and the `dx_engine` module must be importable in Python.

@@ -2,6 +2,10 @@
 
 YOLOv11 세그멘테이션 모델을 사용한 멀티 채널 Qt 데모 애플리케이션입니다.
 
+## 스크린샷
+
+![YOLOv11 Segmentation 데모 스크린샷](img/yolov11seg_4ch_demo_screenshot.png)
+
 ## 사전 요구사항
 
 이 프로젝트를 실행하기 전에 **DX-RT**(DeepX Runtime)가 빌드되어 있어야 하며, Python에서 `dx_engine` 모듈을 import할 수 있어야 합니다.
