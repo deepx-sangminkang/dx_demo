@@ -1,5 +1,5 @@
-#ifndef YOLOV8_SEG_POSTPROCESS_H
-#define YOLOV8_SEG_POSTPROCESS_H
+#ifndef YOLOV11_SEG_POSTPROCESS_H
+#define YOLOV11_SEG_POSTPROCESS_H
 
 #include <dxrt/dxrt_api.h>
 
@@ -7,10 +7,10 @@
 #include <vector>
 
 /**
- * @brief YOLOv8n detection result structure
+ * @brief YOLOv11 detection result structure
  * Contains bounding box coordinates, confidence scores, and class information
  */
-struct YOLOv8_SEGResult {
+struct YOLOv11_SEGResult {
     // Core detection data - using vectors for flexibility
     std::vector<float> box{};  // x1, y1, x2, y2 - bounding box coordinates
     float confidence{0.0f};    // Detection confidence score
@@ -24,22 +24,22 @@ struct YOLOv8_SEGResult {
     int mask_width{0};                   // Width of the segmentation mask
 
     // Default constructor with explicit initialization
-    YOLOv8_SEGResult() {}
+    YOLOv11_SEGResult() {}
 
     // Parameterized constructor with move semantics for better performance
-    YOLOv8_SEGResult(std::vector<float> box_val, const float conf, const int cls_id,
+    YOLOv11_SEGResult(std::vector<float> box_val, const float conf, const int cls_id,
                      const std::string& cls_name)
         : box(std::move(box_val)), confidence(conf), class_id(cls_id), class_name(cls_name) {}
 
     // Legacy constructor for backward compatibility
-    YOLOv8_SEGResult(const std::vector<float>& box_val, const float conf, const int cls_id,
+    YOLOv11_SEGResult(const std::vector<float>& box_val, const float conf, const int cls_id,
                      const std::string& cls_name);
 
     // Destructor
-    ~YOLOv8_SEGResult() {}
+    ~YOLOv11_SEGResult() {}
 
     // Copy and move constructors/operators
-    YOLOv8_SEGResult(const YOLOv8_SEGResult& other)
+    YOLOv11_SEGResult(const YOLOv11_SEGResult& other)
         : box(other.box),
           confidence(other.confidence),
           class_id(other.class_id),
@@ -48,7 +48,7 @@ struct YOLOv8_SEGResult {
           mask(other.mask),
           mask_height(other.mask_height),
           mask_width(other.mask_width) {}
-    YOLOv8_SEGResult& operator=(const YOLOv8_SEGResult& other) {
+    YOLOv11_SEGResult& operator=(const YOLOv11_SEGResult& other) {
         if (this != &other) {
             box = other.box;
             confidence = other.confidence;
@@ -61,7 +61,7 @@ struct YOLOv8_SEGResult {
         }
         return *this;
     }
-    YOLOv8_SEGResult(YOLOv8_SEGResult&& other)
+    YOLOv11_SEGResult(YOLOv11_SEGResult&& other)
         : box(std::move(other.box)),
           confidence(other.confidence),
           class_id(other.class_id),
@@ -70,7 +70,7 @@ struct YOLOv8_SEGResult {
           mask(std::move(other.mask)),
           mask_height(other.mask_height),
           mask_width(other.mask_width) {}
-    YOLOv8_SEGResult& operator=(YOLOv8_SEGResult&& other) {
+    YOLOv11_SEGResult& operator=(YOLOv11_SEGResult&& other) {
         if (this != &other) {
             box = std::move(other.box);
             confidence = other.confidence;
@@ -92,10 +92,10 @@ struct YOLOv8_SEGResult {
 };
 
 /**
- * @brief YOLOv8n post-processing class
+ * @brief YOLOv11 post-processing class
  * Handles detection results processing, NMS, and coordinate transformations
  */
-class YOLOv8_SEGPostProcess {
+class YOLOv11_SEGPostProcess {
    private:
     // Image dimensions - using const for immutable values
     int input_width_{640};   // Model input width (default YOLO size)
@@ -117,15 +117,15 @@ class YOLOv8_SEGPostProcess {
         anchors_by_strides_;  // Anchors organized by stride
 
     // Private helper methods - const correctness
-    std::vector<YOLOv8_SEGResult> decoding_cpu_outputs(const dxrt::TensorPtrs& outputs) const;
-    std::vector<YOLOv8_SEGResult> decoding_npu_outputs(const dxrt::TensorPtrs& outputs) const;
-    std::vector<YOLOv8_SEGResult> apply_nms(const std::vector<YOLOv8_SEGResult>& detections) const;
+    std::vector<YOLOv11_SEGResult> decoding_cpu_outputs(const dxrt::TensorPtrs& outputs) const;
+    std::vector<YOLOv11_SEGResult> decoding_npu_outputs(const dxrt::TensorPtrs& outputs) const;
+    std::vector<YOLOv11_SEGResult> apply_nms(const std::vector<YOLOv11_SEGResult>& detections) const;
     void decoding_mask_cpu_outputs(const dxrt::TensorPtrs& outputs,
-                                   std::vector<YOLOv8_SEGResult>& detections);
+                                   std::vector<YOLOv11_SEGResult>& detections);
 
     // Segmentation helper methods
     std::vector<std::vector<float>> process_segmentation_masks(
-        const float* mask_output, const std::vector<YOLOv8_SEGResult>& detections, int mask_height,
+        const float* mask_output, const std::vector<YOLOv11_SEGResult>& detections, int mask_height,
         int mask_width) const;
     
     std::vector<std::vector<float>> scale_masks(
@@ -134,7 +134,7 @@ class YOLOv8_SEGPostProcess {
     
     std::vector<std::vector<float>> crop_masks(
         std::vector<std::vector<float>>&& masks,
-        const std::vector<YOLOv8_SEGResult>& detections) const;
+        const std::vector<YOLOv11_SEGResult>& detections) const;
     
 
     static float sigmoid(float x) { return 1.0f / (1.0f + std::exp(-x)); }
@@ -151,22 +151,22 @@ class YOLOv8_SEGPostProcess {
      * @note num_classes is fixed constant for COCO object detection
      */
 
-    YOLOv8_SEGPostProcess(const int input_w, const int input_h, const float score_threshold,
+    YOLOv11_SEGPostProcess(const int input_w, const int input_h, const float score_threshold,
                           const float nms_threshold, const bool is_ort_configured = false);
 
-    YOLOv8_SEGPostProcess();
+    YOLOv11_SEGPostProcess();
 
     /**
      * @brief Destructor
      */
-    ~YOLOv8_SEGPostProcess() {}
+    ~YOLOv11_SEGPostProcess() {}
 
     /**
-     * @brief Process YOLOv8n model outputs
+     * @brief Process YOLOv11 model outputs
      * @param outputs Vector of output tensors from the model
      * @return Vector of processed detection results
      */
-    std::vector<YOLOv8_SEGResult> postprocess(const dxrt::TensorPtrs& outputs);
+    std::vector<YOLOv11_SEGResult> postprocess(const dxrt::TensorPtrs& outputs);
 
     /**
      * @brief Align tensor data for processing
@@ -206,4 +206,4 @@ class YOLOv8_SEGPostProcess {
     const std::vector<std::string>& get_cpu_output_names() const { return cpu_output_names_; }
 };
 
-#endif  // YOLOV8_SEG_POSTPROCESS_H
+#endif  // YOLOV11_SEG_POSTPROCESS_H

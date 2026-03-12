@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(libyolov8_seg)
+project(libyolov11_seg)
 
 if(NOT CMAKE_CXX_STANDARD)
     set(CMAKE_CXX_STANDARD 17)
@@ -29,16 +29,16 @@ endif()
 
 include_directories(${PROJECT_ROOT}/src/utility/)
 
-# Source files for yolov8_seg_postprocess library
+# Source files for yolov11_seg_postprocess library
 set(SOURCES
     ${PROJECT_ROOT}/src/utility/common_util.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/yolov8_seg_postprocess.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/yolov11_seg_postprocess.cpp
 )
 
-# Header files for yolov8_seg_postprocess library
+# Header files for yolov11_seg_postprocess library
 set(HEADERS
     ${PROJECT_ROOT}/src/utility/common_util.hpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/yolov8_seg_postprocess.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/yolov11_seg_postprocess.h
 )
 
 # Common libraries for linking
@@ -62,20 +62,20 @@ set(COMMON_COMPILE_FLAGS -Wall -Wextra -O3 )
 # Common compile definitions
 set(COMMON_COMPILE_DEFINITIONS PROJECT_ROOT_DIR="${PROJECT_ROOT}")
 
-# Create the yolov8_seg_postprocess library (shared library, .so file)
+# Create the yolov11_seg_postprocess library (shared library, .so file)
 if(SOURCES)
-    add_library(yolov8_seg_postprocess SHARED ${SOURCES} ${HEADERS})
-    target_link_libraries(yolov8_seg_postprocess PRIVATE ${COMMON_LIBS})
+    add_library(yolov11_seg_postprocess SHARED ${SOURCES} ${HEADERS})
+    target_link_libraries(yolov11_seg_postprocess PRIVATE ${COMMON_LIBS})
     
     # Configure library properties
-    set_target_properties(yolov8_seg_postprocess PROPERTIES
-        OUTPUT_NAME "yolov8_seg_postprocess"
+    set_target_properties(yolov11_seg_postprocess PROPERTIES
+        OUTPUT_NAME "yolov11_seg_postprocess"
         POSITION_INDEPENDENT_CODE ON
         LIBRARY_OUTPUT_DIRECTORY ${PROJECT_ROOT}/lib
     )
     
     # Copy header files to build directory during build
-    add_custom_command(TARGET yolov8_seg_postprocess POST_BUILD
+    add_custom_command(TARGET yolov11_seg_postprocess POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory ${PROJECT_ROOT}/include
         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${HEADERS} ${PROJECT_ROOT}/include
         COMMENT "Copying header files to build directory"
@@ -83,15 +83,15 @@ if(SOURCES)
     
     # Compiler flags and definitions
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_options(yolov8_seg_postprocess PRIVATE ${COMMON_COMPILE_FLAGS})
+        target_compile_options(yolov11_seg_postprocess PRIVATE ${COMMON_COMPILE_FLAGS})
     endif()
-    target_compile_definitions(yolov8_seg_postprocess PRIVATE ${COMMON_COMPILE_DEFINITIONS})
+    target_compile_definitions(yolov11_seg_postprocess PRIVATE ${COMMON_COMPILE_DEFINITIONS})
 else()
-    message(WARNING "No source files found for yolov8_seg_postprocess. The library will not be built.")
+    message(WARNING "No source files found for yolov11_seg_postprocess. The library will not be built.")
 endif()
 
 # Install targets (optional - only if make install is used)
-install(TARGETS yolov8_seg_postprocess
+install(TARGETS yolov11_seg_postprocess
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION bin

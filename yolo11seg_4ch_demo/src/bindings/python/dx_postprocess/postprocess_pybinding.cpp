@@ -1,7 +1,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <dxrt/dxrt_api.h>
-#include "yolov8_seg_postprocess.h"
+#include "yolov11_seg_postprocess.h"
 
 // forward declaration from seg_overlay.cpp
 void bind_seg_overlay(pybind11::module_& m);
@@ -48,7 +48,7 @@ dxrt::TensorPtrs numpy_to_dxrt_tensors(py::list ie_output) {
     return tensors;
 }
 
-py::tuple yolov8_seg_results_to_numpy(const std::vector<YOLOv8_SEGResult>& results) {
+py::tuple yolov11_seg_results_to_numpy(const std::vector<YOLOv11_SEGResult>& results) {
     const size_t num_results = results.size();
     // detection array: [x1, y1, x2, y2, score, class_id]
     py::array_t<float> detections(
@@ -106,25 +106,25 @@ py::tuple yolov8_seg_results_to_numpy(const std::vector<YOLOv8_SEGResult>& resul
     return py::make_tuple(detections, masks);
 }
 
-PYBIND11_MODULE(dx_postprocess, m)
+PYBIND11_MODULE(dx_postprocess_seg, m)
 {
-    py::class_<YOLOv8_SEGPostProcess>(m, "YOLOv8SegPostProcess")
+    py::class_<YOLOv11_SEGPostProcess>(m, "YOLOv11SegPostProcess")
         .def(py::init<int, int, float, float, bool>(),
              py::arg("input_w"),
              py::arg("input_h"),
              py::arg("score_threshold"),
              py::arg("nms_threshold"),
              py::arg("is_ort_configured"))
-        .def("postprocess", [](YOLOv8_SEGPostProcess& self, py::list ie_output) {
+        .def("postprocess", [](YOLOv11_SEGPostProcess& self, py::list ie_output) {
             auto tensors = numpy_to_dxrt_tensors(ie_output);
 
-            std::vector<YOLOv8_SEGResult> results;
+            std::vector<YOLOv11_SEGResult> results;
             {
                 py::gil_scoped_release release;
                 results = self.postprocess(tensors);
             }
             
-            return yolov8_seg_results_to_numpy(results);
+            return yolov11_seg_results_to_numpy(results);
         }, py::arg("ie_output"));
 
     // segmentation overlay utilities

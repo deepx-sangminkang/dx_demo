@@ -21,29 +21,22 @@ Refer to the DX-RT project documentation for installation and build instructions
 
 ## Installation
 
-### 1. Install dependencies
+Run the demo with:
 
 ```bash
-pip install -r requirements.txt
+./run_demo.sh
 ```
 
-### 2. Install the dx_postprocess module
+`run_demo.sh` automatically checks and installs what is missing before starting:
+1. Installs any missing Python dependencies (`requirements.txt`)
+2. Builds and installs the `dx-postprocess-seg` C++ extension if not already installed
+3. Downloads sample videos into `assets/videos/` if not present
+
+To install manually without running the demo:
 
 ```bash
-cd src/bindings/python/dx_postprocess
-pip install .
-cd ../../../..
+./install.sh
 ```
-
-> **Note:** `dx_postprocess` is a C++-based Python extension module that accelerates YOLO segmentation post-processing (`YOLOv8SegPostProcess`) and mask overlay (`overlay_segmentation`). Pixel-level operations that would bottleneck pure Python are handled in C++, enabling real-time multi-channel inference performance.
-
-### 3. Download sample videos
-
-```bash
-./setup.sh
-```
-
-This downloads the sample videos used by the demo into `assets/videos/`.
 
 ## Configuration
 
@@ -91,8 +84,31 @@ channels:
 ## Running
 
 ```bash
-python -m demo.main
+./run_demo.sh
 ```
+
+## Performance Tuning
+
+The demo shows per-stage frame drop counters in the title bar. Use them to identify bottlenecks and adjust `workers:` counts in [`demo/config/yolov11_multich.yaml`](demo/config/yolov11_multich.yaml).
+
+![Drop example](img/drop_example_capture.png)
+
+| Drop counter | Bottleneck | Action |
+|---|---|---|
+| `infer drop` | Preprocessing is too slow | Increase `workers.preprocess` |
+| `input drop` | Inference / waiting is too slow | Increase `workers.wait` |
+| `post drop` | Post-processing is too slow | Increase `workers.postprocess` |
+| `draw drop` | Rendering is too slow | Increase `workers.draw` |
+
+```yaml
+workers:
+  preprocess: 1   # increase if infer drop is high
+  wait: 1         # increase if input drop is high
+  postprocess: 2  # increase if post drop is high
+  draw: 1         # increase if draw drop is high
+```
+
+> Optimal values depend on your hardware (CPU cores, NPU throughput, number of active channels).
 
 ## Project Structure
 
@@ -100,6 +116,6 @@ python -m demo.main
 - `demo/engine.py` - YOLOv11 inference engine wrapper
 - `demo/workers.py` - Multi-threaded workers (capture / pre-process / post-process)
 - `demo/config/yolov11_multich.yaml` - Configuration file
-- `src/bindings/python/dx_postprocess/` - C++ post-processing Python bindings
+- `src/bindings/python/dx_postprocess/` - C++ post-processing Python bindings (`dx-postprocess-seg`)
 - `assets/models/` - DXNN model files
 - `assets/videos/` - Test video files

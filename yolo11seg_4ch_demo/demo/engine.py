@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Tuple
 import cv2
 import numpy as np
 from dx_engine import Configuration, InferenceEngine
-from dx_postprocess import YOLOv8SegPostProcess, overlay_segmentation
+from dx_postprocess_seg import YOLOv11SegPostProcess, overlay_segmentation
 from packaging import version
 
 class YOLOv11Engine:
@@ -67,7 +67,7 @@ class YOLOv11Engine:
         self.score_threshold = 0.5
         self.nms_threshold = 0.45
 
-        self.postprocessor = YOLOv8SegPostProcess(
+        self.postprocessor = YOLOv11SegPostProcess(
             self.input_width,
             self.input_height,
             self.score_threshold,
@@ -409,7 +409,7 @@ class YOLOv11Engine:
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Postprocess network output tensors.
 
-        - Uses C++ YOLOv8SegPostProcess to produce bbox + mask results
+        - Uses C++ YOLOv11SegPostProcess to produce bbox + mask results
         - Converts both bbox and mask data to original-image coordinates/resolution
         """
 
@@ -448,7 +448,7 @@ class YOLOv11Engine:
         - detections: (N, 6) [x1,y1,x2,y2,score,class_id]
 
         The actual pixel operation runs in the C++ extension module
-        (`dx_postprocess.overlay_segmentation`).
+        (`dx_postprocess_seg.overlay_segmentation`).
         """
 
         if masks is None or len(masks) == 0:

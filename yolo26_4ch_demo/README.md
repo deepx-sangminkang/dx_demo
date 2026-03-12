@@ -1,15 +1,15 @@
 > Korean documentation: [README-ko.md](README-ko.md)
 
-# YOLO26 Segmentation Multi-Channel Demo
+# YOLO26 Multi-Channel Demo
 
-A multi-channel Qt demo application using the YOLO26 segmentation model.
+A multi-channel Qt demo application using the YOLO26 detection model.
 
 - The Qt GUI has a **class list panel** on the right side, where each class has a checkbox
   to individually control whether the BBOX for that class is displayed.
 
 ## Screenshot
 
-![YOLO26 Segmentation Demo Screenshot](img/yolo26_4ch_demo_screenshot.png)
+![YOLO26 Demo Screenshot](img/yolo26_4ch_demo_screenshot.png)
 
 ## Prerequisites
 
@@ -24,19 +24,21 @@ Refer to the DX-RT project documentation for installation and build instructions
 
 ## Installation
 
-### 1. Install dependencies
+Run the demo with:
 
 ```bash
-pip install -r requirements.txt
+./run_demo.sh
 ```
 
-### 2. Download sample videos
+`run_demo.sh` automatically checks and installs what is missing before starting:
+1. Installs any missing Python dependencies (`requirements.txt`)
+2. Downloads sample videos into `assets/videos/` if not present
+
+To install manually without running the demo:
 
 ```bash
-./setup.sh
+./install.sh
 ```
-
-This downloads the sample videos used by the demo into `assets/videos/`.
 
 ## Configuration
 
@@ -83,8 +85,29 @@ channels:
 ## Running
 
 ```bash
-python -m demo.main
+./run_demo.sh
 ```
+
+## Performance Tuning
+
+The demo shows per-stage frame drop counters in the title bar. Use them to identify bottlenecks and adjust `workers:` counts in [`demo/config/yolo26_multich.yaml`](demo/config/yolo26_multich.yaml).
+
+![Drop example](img/drop_example_capture.png)
+
+| Drop counter | Bottleneck | Action |
+|---|---|---|
+| `infer drop` | Preprocessing is too slow | Increase `workers.preprocess` |
+| `input drop` | Inference / waiting is too slow | Increase `workers.wait` |
+| `draw drop` | Rendering is too slow | Increase `workers.draw` |
+
+```yaml
+workers:
+  preprocess: 1   # increase if infer drop is high
+  wait: 1         # increase if input drop is high
+  draw: 1         # increase if draw drop is high
+```
+
+> Optimal values depend on your hardware (CPU cores, NPU throughput, number of active channels).
 
 ## Project Structure
 

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(dx_postprocess_module)
+project(dx_postprocess_seg_module)
 
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,7 +21,7 @@ find_package(pybind11 CONFIG REQUIRED)
 
 set(INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}
-    "${PROJECT_ROOT}/src/postprocess/yolov8_seg"
+    "${PROJECT_ROOT}/src/postprocess/yolov11_seg"
     "${PROJECT_ROOT}/src/utility"
     "${PROJECT_ROOT}/extern"
 )
@@ -34,21 +34,21 @@ set(SOURCES
     "${PROJECT_ROOT}/src/utility/common_util.cpp"
 )
 
-pybind11_add_module(dx_postprocess ${SOURCES})
-target_include_directories(dx_postprocess PRIVATE ${INCLUDE_DIRS})
-target_link_libraries(dx_postprocess PRIVATE ${DXRT_LIB})
+pybind11_add_module(dx_postprocess_seg ${SOURCES})
+target_include_directories(dx_postprocess_seg PRIVATE ${INCLUDE_DIRS})
+target_link_libraries(dx_postprocess_seg PRIVATE ${DXRT_LIB})
 
-set_target_properties(dx_postprocess PROPERTIES
+set_target_properties(dx_postprocess_seg PROPERTIES
     PREFIX ""
     SUFFIX ".so")
 
-install(TARGETS dx_postprocess DESTINATION .)
+install(TARGETS dx_postprocess_seg DESTINATION .)
 
 if(DEFINED ENV{DEBUG})
-    target_compile_options(dx_postprocess PRIVATE -g -O0 -Wall)
-    target_compile_definitions(dx_postprocess PRIVATE DX_DEBUG)
-    message(STATUS "Building dx_postprocess in DEBUG mode")
+    target_compile_options(dx_postprocess_seg PRIVATE -g -O0 -Wall)
+    target_compile_definitions(dx_postprocess_seg PRIVATE DX_DEBUG)
+    message(STATUS "Building dx_postprocess_seg in DEBUG mode")
 else()
-    target_compile_options(dx_postprocess PRIVATE -O3 -march=native -Wall)
-    target_compile_definitions(dx_postprocess PRIVATE NDEBUG)
+    target_compile_options(dx_postprocess_seg PRIVATE -O3 -march=native -Wall)
+    target_compile_definitions(dx_postprocess_seg PRIVATE NDEBUG)
 endif()

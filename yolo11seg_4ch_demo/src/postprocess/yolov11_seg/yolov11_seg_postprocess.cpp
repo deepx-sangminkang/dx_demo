@@ -1,4 +1,4 @@
-#include "yolov8_seg_postprocess.h"
+#include "yolov11_seg_postprocess.h"
 
 #include <dxrt/tensor.h>
 
@@ -13,12 +13,12 @@
 
 #include "common_util.hpp"
 
-bool YOLOv8_SEGResult::is_invalid(int image_width, int image_height) const {
+bool YOLOv11_SEGResult::is_invalid(int image_width, int image_height) const {
     return box[0] < 0 || box[1] < 0 || box[2] > image_width || box[3] > image_height;
 }
 
 // Constructor
-YOLOv8_SEGPostProcess::YOLOv8_SEGPostProcess(const int input_w, const int input_h,
+YOLOv11_SEGPostProcess::YOLOv11_SEGPostProcess(const int input_w, const int input_h,
                                              const float score_threshold, const float nms_threshold,
                                              const bool is_ort_configured) {
     input_width_ = input_w;
@@ -29,40 +29,40 @@ YOLOv8_SEGPostProcess::YOLOv8_SEGPostProcess(const int input_w, const int input_
 
     if (!is_ort_configured_) {
         throw std::invalid_argument(
-            "ORT-OFF output postprocessing is not supported for yolov8-seg\n"
+            "ORT-OFF output postprocessing is not supported for yolov11-seg\n"
             "please dxrt build with USE_ORT=ON");
     }
 
-    // YOLOv8-seg (ORT) output layout:
+    // YOLOv11-seg (ORT) output layout:
     //   output0: FLOAT, [1, 116, 8400]  -> bbox(4) + classes(80) + seg_coef(32)
     //   output1: FLOAT, [1, 32, 160, 160] -> mask prototypes
 
-    // Initialize model-specific parameters for YOLOv8-seg
+    // Initialize model-specific parameters for YOLOv11-seg
     cpu_output_names_ = {"output0", "output1"};
     npu_output_names_ = {};
     anchors_by_strides_ = {{8, {}}, {16, {}}, {32, {}}};
 }
 
 // Default constructor
-YOLOv8_SEGPostProcess::YOLOv8_SEGPostProcess() {
+YOLOv11_SEGPostProcess::YOLOv11_SEGPostProcess() {
     input_width_ = 640;
     input_height_ = 640;
     score_threshold_ = 0.5f;  // Increased from 0.45f for stricter filtering
     nms_threshold_ = 0.45f;   // Increased from 0.4f for stricter NMS
     is_ort_configured_ = false;
 
-    // YOLOv8-seg (ORT) output layout:
+    // YOLOv11-seg (ORT) output layout:
     //   output0: FLOAT, [1, 116, 8400]  -> bbox(4) + classes(80) + seg_coef(32)
     //   output1: FLOAT, [1, 32, 160, 160] -> mask prototypes
 
-    // Initialize model-specific parameters for YOLOv8-seg
+    // Initialize model-specific parameters for YOLOv11-seg
     cpu_output_names_ = {"output0", "output1"};
     npu_output_names_ = {};
     anchors_by_strides_ = {{8, {}}, {16, {}}, {32, {}}};
 }
 
 // Process model outputs
-std::vector<YOLOv8_SEGResult> YOLOv8_SEGPostProcess::postprocess(const dxrt::TensorPtrs& outputs) {
+std::vector<YOLOv11_SEGResult> YOLOv11_SEGPostProcess::postprocess(const dxrt::TensorPtrs& outputs) {
     dxrt::TensorPtrs aligned_outputs;
     if (!is_ort_configured_)
         aligned_outputs = align_tensors(outputs);
@@ -71,7 +71,7 @@ std::vector<YOLOv8_SEGResult> YOLOv8_SEGPostProcess::postprocess(const dxrt::Ten
     if (aligned_outputs.empty()) {
         int i = 0;
         std::ostringstream msg;
-        msg << "[DXAPP] [ER] YOLOv8_SEGPostProcess::postprocess - Aligned outputs are empty.\n"
+        msg << "[DXAPP] [ER] YOLOv11_SEGPostProcess::postprocess - Aligned outputs are empty.\n"
             << "  Unexpected shape\n";
         for (auto& o : outputs) {
             msg << "    Output shape [" << i++ << "]: (";
@@ -87,7 +87,7 @@ std::vector<YOLOv8_SEGResult> YOLOv8_SEGPostProcess::postprocess(const dxrt::Ten
         throw std::runtime_error(msg.str());  // Safe failure: propagate the error to the caller
     }
 
-    std::vector<YOLOv8_SEGResult> detections;
+    std::vector<YOLOv11_SEGResult> detections;
     detections = decoding_cpu_outputs(aligned_outputs);
     // Apply Non-Maximum Suppression (mask will be included in NMS process)
     detections = apply_nms(detections);
@@ -99,11 +99,11 @@ std::vector<YOLOv8_SEGResult> YOLOv8_SEGPostProcess::postprocess(const dxrt::Ten
     return detections;
 }
 
-void YOLOv8_SEGPostProcess::decoding_mask_cpu_outputs(const dxrt::TensorPtrs& outputs,
-                                                      std::vector<YOLOv8_SEGResult>& detections) {
-    // std::vector<YOLOv8_SEGResult> results;
+void YOLOv11_SEGPostProcess::decoding_mask_cpu_outputs(const dxrt::TensorPtrs& outputs,
+                                                      std::vector<YOLOv11_SEGResult>& detections) {
+    // std::vector<YOLOv11_SEGResult> results;
     /**
-     * @note YOLOv8-seg has different output format:
+     * @note YOLOv11-seg has different output format:
      * output0: [1, 116, 8400] - contains bbox (4) + classes (80) + seg_coef (32)
      * output1: [1, 32, 160, 160] - segmentation masks   (*** Used in this field)
      */
@@ -120,11 +120,11 @@ void YOLOv8_SEGPostProcess::decoding_mask_cpu_outputs(const dxrt::TensorPtrs& ou
 }
 
 // Decode model outputs to detection results
-std::vector<YOLOv8_SEGResult> YOLOv8_SEGPostProcess::decoding_cpu_outputs(
+std::vector<YOLOv11_SEGResult> YOLOv11_SEGPostProcess::decoding_cpu_outputs(
     const dxrt::TensorPtrs& outputs) const {
-    std::vector<YOLOv8_SEGResult> detections;
+    std::vector<YOLOv11_SEGResult> detections;
     /**
-     * @note YOLOv8-seg has different output format:
+     * @note YOLOv11-seg has different output format:
      * output0: [1, 116, 8400] - contains bbox (4) + classes (80) + seg_coef (32) (Used in this
      * field) output1: [1, 32, 160, 160] - segmentation masks
      */
@@ -168,7 +168,7 @@ std::vector<YOLOv8_SEGResult> YOLOv8_SEGPostProcess::decoding_cpu_outputs(
         float x2 = cx + w / 2.0f;
         float y2 = cy + h / 2.0f;
 
-        YOLOv8_SEGResult result;
+        YOLOv11_SEGResult result;
         result.confidence = max_scores[i];
         result.class_id = best_classes[i];
         result.class_name = dxapp::common::get_coco_class_name(result.class_id);
@@ -192,8 +192,8 @@ std::vector<YOLOv8_SEGResult> YOLOv8_SEGPostProcess::decoding_cpu_outputs(
 }
 
 // Apply Non-Maximum Suppression - simple version like Python torchvision.ops.nms
-std::vector<YOLOv8_SEGResult> YOLOv8_SEGPostProcess::apply_nms(
-    const std::vector<YOLOv8_SEGResult>& detections) const {
+std::vector<YOLOv11_SEGResult> YOLOv11_SEGPostProcess::apply_nms(
+    const std::vector<YOLOv11_SEGResult>& detections) const {
     if (detections.empty()) {
         return {};
     }
@@ -208,7 +208,7 @@ std::vector<YOLOv8_SEGResult> YOLOv8_SEGPostProcess::apply_nms(
               [](const auto& a, const auto& b) { return a.first > b.first; });
 
     std::vector<bool> suppressed(detections.size(), false);
-    std::vector<YOLOv8_SEGResult> results;
+    std::vector<YOLOv11_SEGResult> results;
 
     for (size_t i = 0; i < conf_idx_pairs.size(); ++i) {
         if (suppressed[i]) {
@@ -258,7 +258,7 @@ std::vector<YOLOv8_SEGResult> YOLOv8_SEGPostProcess::apply_nms(
 }
 
 // Set thresholds
-void YOLOv8_SEGPostProcess::set_thresholds(float score_threshold, float nms_threshold) {
+void YOLOv11_SEGPostProcess::set_thresholds(float score_threshold, float nms_threshold) {
     if (score_threshold >= 0.0f && score_threshold <= 1.0f) {
         score_threshold_ = score_threshold;
     }
@@ -268,9 +268,9 @@ void YOLOv8_SEGPostProcess::set_thresholds(float score_threshold, float nms_thre
 }
 
 // Get configuration information56
-std::string YOLOv8_SEGPostProcess::get_config_info() const {
+std::string YOLOv11_SEGPostProcess::get_config_info() const {
     std::ostringstream oss;
-    oss << "YOLOv8n PostProcess Configuration:\n"
+    oss << "YOLOv11 PostProcess Configuration:\n"
         << "  Input dimensions: " << input_width_ << "x" << input_height_ << "\n"
         << "  Score threshold: " << score_threshold_ << "\n"
         << "  NMS threshold: " << nms_threshold_ << "\n"
@@ -294,11 +294,11 @@ std::string YOLOv8_SEGPostProcess::get_config_info() const {
     return oss.str();
 }
 
-dxrt::TensorPtrs YOLOv8_SEGPostProcess::align_tensors(const dxrt::TensorPtrs& outputs) const {
+dxrt::TensorPtrs YOLOv11_SEGPostProcess::align_tensors(const dxrt::TensorPtrs& outputs) const {
     dxrt::TensorPtrs aligned;
 
     if (is_ort_configured_) {
-        // YOLOv8-seg ORT outputs should be aligned as:
+        // YOLOv11-seg ORT outputs should be aligned as:
         // aligned[0]: [1, 116, 8400] - bbox + classes + seg_coef (detection output)
         // aligned[1]: [1, 32, 160, 160] - segmentation masks (mask output)
 
@@ -325,7 +325,7 @@ dxrt::TensorPtrs YOLOv8_SEGPostProcess::align_tensors(const dxrt::TensorPtrs& ou
 
         return aligned;
     } else {
-        // YOLOv8 NPU outputs for segmentation would be similar but may have different tensor names
+        // YOLOv11 NPU outputs for segmentation would be similar but may have different tensor names
         for (const auto& output : outputs) {
             if (output->shape().size() == 4 && output->shape()[2] == 4) {
                 // This is the boxes output
@@ -340,8 +340,8 @@ dxrt::TensorPtrs YOLOv8_SEGPostProcess::align_tensors(const dxrt::TensorPtrs& ou
 }
 
 // Process segmentation masks using optimized ROI-based approach
-std::vector<std::vector<float>> YOLOv8_SEGPostProcess::process_segmentation_masks(
-    const float* mask_output, const std::vector<YOLOv8_SEGResult>& detections, int mask_height,
+std::vector<std::vector<float>> YOLOv11_SEGPostProcess::process_segmentation_masks(
+    const float* mask_output, const std::vector<YOLOv11_SEGResult>& detections, int mask_height,
     int mask_width) const {
     std::vector<std::vector<float>> result_masks;
     result_masks.reserve(detections.size());
@@ -466,7 +466,7 @@ std::vector<std::vector<float>> YOLOv8_SEGPostProcess::process_segmentation_mask
 }
 
 // Scale masks from original size to target size
-std::vector<std::vector<float>> YOLOv8_SEGPostProcess::scale_masks(
+std::vector<std::vector<float>> YOLOv11_SEGPostProcess::scale_masks(
     std::vector<std::vector<float>>&& masks, int target_height, int target_width, int orig_height,
     int orig_width) const {
     // If no scaling needed, return the masks as-is without copying
@@ -525,9 +525,9 @@ std::vector<std::vector<float>> YOLOv8_SEGPostProcess::scale_masks(
 }
 
 // Crop masks to bounding box regions
-std::vector<std::vector<float>> YOLOv8_SEGPostProcess::crop_masks(
+std::vector<std::vector<float>> YOLOv11_SEGPostProcess::crop_masks(
     std::vector<std::vector<float>>&& masks,
-    const std::vector<YOLOv8_SEGResult>& detections) const {
+    const std::vector<YOLOv11_SEGResult>& detections) const {
     if (masks.size() != detections.size()) {
         return std::move(masks);  // Size mismatch, return original masks
     }

@@ -6,4 +6,4 @@ if(NOT CMAKE_CXX_STANDARD)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
 endif()
 
-add_subdirectory(yolov8_seg)
+add_subdirectory(yolov11_seg)
