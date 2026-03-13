@@ -46,7 +46,7 @@ jobs:
     with:
       target_commit: ${{ needs.set_commit.outputs.commit_sha }}
       manual_release: ${{ github.event.inputs.manual_release }}
-      internal_repo: deepx/dx-runtime
+      internal_repo: deepx/dx_demo
       public_repo: ${{ github.event.inputs.public_repo }}
       submodules: false
     secrets:
