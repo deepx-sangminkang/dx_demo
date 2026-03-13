@@ -1,0 +1,4 @@
+.git
+.github/workflows/
+.gitmodules
+dx_clip_demo/
