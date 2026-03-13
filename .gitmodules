@@ -1,3 +1,3 @@
-[submodule "dx-clip-demo"]
-	path = dx-clip-demo
-	url = ../dx-clip-demo
+[submodule "dx_clip_demo"]
+	path = dx_clip_demo
+	url = ../dx_clip_demo.git
