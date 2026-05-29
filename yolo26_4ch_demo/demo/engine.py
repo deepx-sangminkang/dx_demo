@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import cv2
 import numpy as np
@@ -295,6 +295,36 @@ class YOLO26Engine:
         return detections
 
     # ===== Visualisation =====
+
+    def finalize_detections(
+        self,
+        output_tensors: Any,
+        meta: Dict[str, Any],
+        selected_classes: Optional[Set[int]] = None,
+    ) -> np.ndarray:
+        """Produce filtered detections in original-image coordinates.
+
+        Applies class filtering, score thresholding, and the letterbox-inverse
+        coordinate conversion so the GUI can overlay boxes without modifying the
+        displayed frame (display-inference decoupling).
+        """
+
+        detections = np.squeeze(output_tensors)
+        if detections is None or detections.size == 0:
+            return np.empty((0, 6), dtype=np.float32)
+        if detections.ndim == 1:
+            detections = detections.reshape(1, -1)
+
+        if selected_classes is not None:
+            if len(selected_classes) == 0:
+                return np.empty((0, 6), dtype=detections.dtype)
+            cls_mask = np.isin(detections[:, 5].astype(int), list(selected_classes))
+            detections = detections[cls_mask]
+
+        if len(detections) > 0:
+            detections = detections[detections[:, 4] >= self.score_threshold]
+
+        return self.convert_to_original_coordinates(detections, meta)
 
     def draw_detections(
         self,

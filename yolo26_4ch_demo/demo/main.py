@@ -26,11 +26,12 @@ import yaml
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from demo.engine import YOLO26Engine
+from demo.overlay import scale_box
 from demo.workers import (
     CaptureThread,
     preprocess_worker,
     wait_worker,
-    draw_worker,
+    detect_worker,
     queue_drop_counts,
     queue_drop_lock,
     get_fps,
@@ -58,9 +59,26 @@ class VideoWidget(QtWidgets.QWidget):
         self._latest_frame: Optional[np.ndarray] = None
         # Colour order of the stored frame ("bgr" or "rgb").
         self._frame_color_format: str = "bgr"
+        # Latest detections (Nx6: x1,y1,x2,y2,score,class) in original-image
+        # coordinates, overlaid in paintEvent. Updated asynchronously from the
+        # inference pipeline, decoupled from the displayed frame.
+        self._detections: Optional[np.ndarray] = None
+        self._overlay_classes: List[str] = []
+        self._overlay_palette: Optional[np.ndarray] = None
         # Text overlay for per-channel statistics
         # (FPS, processed frame count, dropped frame count)
         self._stats_text: str = ""
+
+    def set_overlay_style(self, class_names: List[str], palette: np.ndarray) -> None:
+        """Inject class names and the colour palette used to draw boxes/labels."""
+
+        self._overlay_classes = class_names
+        self._overlay_palette = palette
+
+    def set_detections(self, detections: Optional[np.ndarray]) -> None:
+        """Store the latest detections (original-image coords) for overlay."""
+
+        self._detections = detections
 
     @QtCore.Slot(np.ndarray)
     def set_frame(self, frame: np.ndarray, color_format: str = "bgr") -> None:
@@ -84,6 +102,60 @@ class VideoWidget(QtWidgets.QWidget):
 
         self._stats_text = text
 
+    def _draw_detections_overlay(
+        self,
+        painter: QtGui.QPainter,
+        src_w: int,
+        src_h: int,
+        dst_w: int,
+        dst_h: int,
+        off_x: int,
+        off_y: int,
+    ) -> None:  # pragma: no cover - GUI only
+        """Draw detection boxes + labels mapped onto the scaled pixmap."""
+
+        detections = self._detections
+        if detections is None or len(detections) == 0:
+            return
+
+        painter.setFont(QtGui.QFont("Monospace", 9))
+        metrics = QtGui.QFontMetrics(painter.font())
+
+        for det in detections:
+            x1, y1, x2, y2 = scale_box(
+                det, (src_w, src_h), (dst_w, dst_h), (off_x, off_y)
+            )
+            class_id = int(det[5])
+            score = float(det[4])
+
+            if self._overlay_palette is not None and 0 <= class_id < len(
+                self._overlay_palette
+            ):
+                r, g, b = (int(c) for c in self._overlay_palette[class_id][:3])
+            else:
+                r, g, b = 0, 255, 0
+            color = QtGui.QColor(r, g, b)
+
+            painter.setPen(QtGui.QPen(color, 2))
+            painter.setBrush(QtCore.Qt.NoBrush)
+            painter.drawRect(
+                int(x1), int(y1), int(x2 - x1), int(y2 - y1)
+            )
+
+            if 0 <= class_id < len(self._overlay_classes):
+                name = self._overlay_classes[class_id]
+            else:
+                name = str(class_id)
+            label = f"{name}: {score:.2f}"
+
+            text_rect = metrics.boundingRect(label)
+            lh = text_rect.height()
+            lw = text_rect.width()
+            label_y = int(y1) - lh if int(y1) - lh > 0 else int(y1) + lh
+            painter.fillRect(int(x1), label_y - lh, lw + 4, lh + 4, color)
+            painter.setPen(QtGui.QPen(QtGui.QColor(0, 0, 0)))
+            painter.drawText(int(x1) + 2, label_y, label)
+
     def paintEvent(self, event: QtGui.QPaintEvent) -> None:  # pragma: no cover - GUI only
         painter = QtGui.QPainter(self)
         rect = self.rect()
@@ -102,15 +174,23 @@ class VideoWidget(QtWidgets.QWidget):
             )
             pix = QtGui.QPixmap.fromImage(qimg)
 
-            # Draw scaled to widget size while preserving aspect ratio
+            # Draw scaled to widget size while preserving aspect ratio.
+            # FastTransformation avoids the expensive smooth resampling so the
+            # paint timer keeps up at high refresh rates (smoother playback).
             target = pix.scaled(
                 rect.size(),
                 QtCore.Qt.KeepAspectRatio,
-                QtCore.Qt.SmoothTransformation,
+                QtCore.Qt.FastTransformation,
             )
             x = rect.x() + (rect.width() - target.width()) // 2
             y = rect.y() + (rect.height() - target.height()) // 2
             painter.drawPixmap(x, y, target)
+
+            # Overlay detection boxes/labels mapped from original-image coords
+            # onto the scaled pixmap (display-inference decoupling).
+            self._draw_detections_overlay(
+                painter, w, h, target.width(), target.height(), x, y
+            )
         else:
             # Fill background only
             painter.fillRect(rect, self.palette().window())
@@ -140,7 +220,8 @@ class VideoWidget(QtWidgets.QWidget):
 
 
 class MainWindow(QtWidgets.QMainWindow):
-    frame_ready = QtCore.Signal(int, object, dict)  # channel_id, frame_bgr, meta
+    frame_ready = QtCore.Signal(int, object, dict)  # channel_id, frame, meta (display path)
+    detections_ready = QtCore.Signal(int, object, dict)  # channel_id, detections, meta
 
     def __init__(self, config: Dict[str, Any], parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
@@ -270,6 +351,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Connect frame_ready signal to the VideoWidget update slot
         self.frame_ready.connect(self.on_frame_ready)
+        self.detections_ready.connect(self.on_detections_ready)
 
         # Sync side button state when the dock widget visibility changes
         self.class_dock.visibilityChanged.connect(self._on_class_dock_visibility_changed)
@@ -531,6 +613,11 @@ class MainWindow(QtWidgets.QMainWindow):
         # Build the filter panel using class names
         self._build_class_filter_panel(self.engine.classes)
 
+        # Inject overlay style (class names + colour palette) into each widget so
+        # detection boxes can be drawn in paintEvent.
+        for w in self.video_widgets:
+            w.set_overlay_style(self.engine.classes, self.engine.color_palette)
+
         # Shared queues and stop flag
         self.input_queue: "queue.Queue[Any]" = queue.Queue(maxsize=32)
         self.infer_queue: "queue.Queue[Any]" = queue.Queue(maxsize=32)
@@ -557,6 +644,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 max_fps=max_fps,
                 source_type=source_type,
                 decode_mode=decode_mode,
+                display_callback=self._on_display_frame_from_capture,
             )
             self.capture_threads.append(t)
 
@@ -602,19 +690,19 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self._threads.append(t_wait)
 
-        # Create draw worker pool (draw_queue → GUI)
+        # Create detection post-processing worker pool (draw_queue → GUI overlay)
         for i in range(num_draw_workers):
             t_draw = threading.Thread(
-                target=draw_worker,
+                target=detect_worker,
                 args=(
                     self.engine,
                     self.draw_queue,
                     self.get_selected_classes,
-                    self._on_frame_ready_from_worker,
+                    self._on_detections_ready_from_worker,
                     self.stop_event,
                 ),
                 daemon=True,
-                name=f"draw_worker_{i}",
+                name=f"detect_worker_{i}",
             )
             self._threads.append(t_draw)
 
@@ -624,19 +712,26 @@ class MainWindow(QtWidgets.QMainWindow):
         for t in self._threads:
             t.start()
 
-    # ----- Worker → GUI forwarding wrapper -----
+    # ----- Worker → GUI forwarding wrappers -----
 
-    def _on_frame_ready_from_worker(
-        self, channel_id: int, frame_bgr: np.ndarray, meta: Dict[str, Any]
+    def _on_display_frame_from_capture(
+        self, channel_id: int, frame: np.ndarray, color_format: str
     ) -> None:
-        """Callback invoked from a worker thread.
+        """Callback invoked from a capture thread for every captured frame.
 
-        - Wrapped to emit a signal to the Qt main thread.
+        - Emits to the Qt main thread so the display refreshes at capture FPS,
+          decoupled from the (slower) inference pipeline.
         """
 
-        # Called from a worker thread, so just emit the signal here.
-        # on_frame_ready on the Qt main thread side ensures only the latest frame is used.
-        self.frame_ready.emit(channel_id, frame_bgr, meta)
+        meta = {"color_format": color_format, "ts": time.time()}
+        self.frame_ready.emit(channel_id, frame, meta)
+
+    def _on_detections_ready_from_worker(
+        self, channel_id: int, detections: np.ndarray, meta: Dict[str, Any]
+    ) -> None:
+        """Callback invoked from a detect worker thread with finalized detections."""
+
+        self.detections_ready.emit(channel_id, detections, meta)
 
     def _on_paint_timer(self) -> None:
         """Called periodically to repaint all VideoWidgets.
@@ -653,16 +748,17 @@ class MainWindow(QtWidgets.QMainWindow):
     # ----- GUI slots -----
 
     @QtCore.Slot(int, object, dict)
-    def on_frame_ready(self, channel_id: int, frame_bgr: np.ndarray, meta: Dict[str, Any]) -> None:
-        """Receive frame_ready signal and update the VideoWidget.
+    def on_frame_ready(self, channel_id: int, frame: np.ndarray, meta: Dict[str, Any]) -> None:
+        """Receive a captured frame (display path) and update the VideoWidget.
 
-        - Even if multiple frame_ready signals arrive in a burst,
-          always apply only the latest frame per channel to the screen.
+        - Runs at capture FPS; always applies only the latest frame per channel.
+        - Per-channel display stats (fps/processed) are updated here so they
+          reflect on-screen smoothness rather than inference throughput.
         """
 
         # Update the latest frame/meta per channel
         with self._latest_lock:
-            self._latest_frames[channel_id] = frame_bgr
+            self._latest_frames[channel_id] = frame
             self._latest_meta[channel_id] = meta
 
         # Update the widget using the latest frame at this moment
@@ -677,13 +773,24 @@ class MainWindow(QtWidgets.QMainWindow):
                 color_format = (latest_meta or {}).get("color_format", "bgr")
                 self.video_widgets[channel_id].set_frame(latest_frame, color_format)
 
-            # Update performance metrics and per-channel stats
-            if latest_meta is not None:
-                self._update_performance_metrics(latest_meta)
-                self._update_channel_stats_on_frame(channel_id, latest_meta)
+            # Per-channel display stats (frames that reached the screen)
+            self._update_channel_stats_on_frame(channel_id, latest_meta or {})
 
         # Print global throughput summary log once every 10 seconds from the main thread
         self._log_throughput_summary()
+
+    @QtCore.Slot(int, object, dict)
+    def on_detections_ready(
+        self, channel_id: int, detections: np.ndarray, meta: Dict[str, Any]
+    ) -> None:
+        """Receive finalized detections and store them for paintEvent overlay."""
+
+        if 0 <= channel_id < len(self.video_widgets):
+            self.video_widgets[channel_id].set_detections(detections)
+
+        # Inference-stage performance metrics come from the inference meta here.
+        if meta is not None:
+            self._update_performance_metrics(meta)
 
     # ----- Shutdown -----
 

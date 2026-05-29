@@ -10,7 +10,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 from collections import defaultdict
 
 import cv2
@@ -120,22 +120,6 @@ def _enqueue_latest(
         pass
 
 
-def _filter_selected_detections(
-    detections: np.ndarray,
-    selected_classes: Optional[set[int]],
-) -> np.ndarray:
-    """Filter detections by the currently selected class ids."""
-
-    if selected_classes is None:
-        return detections
-
-    if len(selected_classes) == 0:
-        return np.empty((0, 6), dtype=detections.dtype)
-
-    cls_mask = np.isin(detections[:, 5].astype(int), list(selected_classes))
-    return detections[cls_mask]
-
-
 # ===== Data structures for shared queues =====
 
 
@@ -159,7 +143,6 @@ class InferItem:
     """Data passed from preprocess_worker to wait_worker."""
 
     channel_id: int
-    frame_bgr: np.ndarray
     input_tensor: np.ndarray
     req_id: int
     meta: Dict[str, Any]
@@ -167,10 +150,9 @@ class InferItem:
 
 @dataclass
 class OutputItem:
-    """Data passed from wait_worker to draw_worker."""
+    """Data passed from wait_worker to detect_worker."""
 
     channel_id: int
-    frame_bgr: np.ndarray
     output_tensors: Any
     meta: Dict[str, Any]
 
@@ -216,6 +198,7 @@ class CaptureThread(threading.Thread):
         name: Optional[str] = None,
         source_type: str = "video",
         decode_mode: str = "auto",
+        display_callback: Optional[Callable[[int, np.ndarray, str], None]] = None,
     ) -> None:
         super().__init__(daemon=True, name=name or f"CaptureThread-{channel_id}")
         self.channel_id = channel_id
@@ -224,6 +207,9 @@ class CaptureThread(threading.Thread):
         self.max_fps = max_fps
         self.source_type = source_type or "video"
         self.decode_mode = decode_mode or "auto"
+        # Optional callback invoked for every captured frame so the display can
+        # update at capture FPS, decoupled from the (slower) inference pipeline.
+        self.display_callback = display_callback
         self.used_hw = False
         # Colour order of frames this thread produces ("bgr" or "rgb"); the RGA
         # dxconvert HW path on RK3588 yields RGB so downstream cvtColor is skipped.
@@ -339,6 +325,11 @@ class CaptureThread(threading.Thread):
 
                 self._enqueue_capture_item(item)
 
+                # Forward the captured frame straight to the display path so the
+                # screen refreshes at capture FPS, independent of inference speed.
+                if self.display_callback is not None:
+                    self.display_callback(self.channel_id, frame_bgr, self.color_format)
+
                 # Record read-stage throughput (only when successfully enqueued)
                 record_throughput("read", time.time())
 
@@ -385,7 +376,6 @@ def preprocess_worker(
         req_id = engine.run_async(input_tensor)
         infer_item = InferItem(
             channel_id=item.channel_id,
-            frame_bgr=item.frame_bgr,
             input_tensor=input_tensor,
             req_id=req_id,
             meta=item.meta,
@@ -423,7 +413,6 @@ def wait_worker(
 
         out_item = OutputItem(
             channel_id=item.channel_id,
-            frame_bgr=item.frame_bgr,
             output_tensors=output_tensors,
             meta=item.meta,
         )
@@ -434,17 +423,19 @@ def wait_worker(
         record_throughput("inf", time.time())
 
 
-def draw_worker(
+def detect_worker(
     engine: YOLO26Engine,
     draw_queue: "queue.Queue[OutputItem]",
     get_selected_classes,
-    on_frame_ready,
+    on_detections_ready,
     stop_event: threading.Event,
 ) -> None:
-    """Global draw + GUI delivery worker.
+    """Global detection post-processing + GUI delivery worker.
 
-    - Receives frame + meta(detections) from draw_queue,
-      calls draw_detections, and forwards to on_frame_ready.
+    - Receives inference outputs + meta from draw_queue,
+      computes filtered detections in original-image coordinates, and forwards
+      them to ``on_detections_ready`` (no frame is touched here; the GUI overlays
+      boxes onto the separately-displayed capture frame).
     """
 
     while not stop_event.is_set():  # pragma: no cover - runtime only
@@ -456,18 +447,18 @@ def draw_worker(
         if item is None:
             break
 
-        detections = np.squeeze(item.output_tensors)
         selected_classes = get_selected_classes()
-        filtered_detections = _filter_selected_detections(detections, selected_classes)
 
         t_draw0 = time.perf_counter()
-        engine.draw_detections(item.frame_bgr, filtered_detections, item.meta)
+        detections = engine.finalize_detections(
+            item.output_tensors, item.meta, selected_classes
+        )
         t_draw1 = time.perf_counter()
 
         item.meta["t_draw"] = t_draw1 - t_draw0
 
-        on_frame_ready(item.channel_id, item.frame_bgr, item.meta)
+        on_detections_ready(item.channel_id, detections, item.meta)
 
-        # Record draw-stage throughput (at the point frame visualisation and GUI delivery completes)
+        # Record draw-stage throughput (after detections are computed and delivered)
         now = time.time()
         record_throughput("draw", now)
