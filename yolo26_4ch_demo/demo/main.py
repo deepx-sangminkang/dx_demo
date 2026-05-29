@@ -525,6 +525,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.draw_queue: "queue.Queue[Any]" = queue.Queue(maxsize=32)
         self.stop_event = threading.Event()
 
+        # Global decode mode (auto/hw/sw); per-channel value can override it.
+        global_decode = str(config.get("decode", "auto"))
+
         # Create per-channel capture threads
         self.capture_threads: List[CaptureThread] = []
         for idx, ch_cfg in enumerate(config.get("channels", [])):
@@ -533,11 +536,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
             source = ch_cfg["source"]
             max_fps = ch_cfg.get("max_fps")
+            source_type = ch_cfg.get("type", "video")
+            decode_mode = str(ch_cfg.get("decode", global_decode))
             t = CaptureThread(
                 channel_id=idx,
                 source=source,
                 input_queue=self.input_queue,
                 max_fps=max_fps,
+                source_type=source_type,
+                decode_mode=decode_mode,
             )
             self.capture_threads.append(t)
 

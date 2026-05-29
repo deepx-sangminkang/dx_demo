@@ -1,6 +1,16 @@
 
 model: "assets/models/yolo26n-1.dxnn"
 
+# Video decoding mode (global default; can be overridden per channel via `decode:`)
+#   auto : use hardware (GStreamer) decoding when the platform/OpenCV support it,
+#          otherwise fall back to software decoding (default)
+#   hw   : force hardware decoding (still falls back to software if unavailable)
+#   sw   : force software decoding (cv2.VideoCapture default backend)
+# NOTE: hardware decoding requires an OpenCV build with GStreamer support and the
+#       platform decoder plugins (RK3588 mppvideodec / Intel gstreamer1.0-vaapi /
+#       NVIDIA nv decoders). See README for details.
+decode: "auto"
+
 workers:
   preprocess: 1
   wait: 1
@@ -12,6 +22,7 @@ channels:
     source: "assets/videos/cctv-city-road.mov"
     enabled: true
     max_fps: 25
+    # decode: "auto"   # optional per-channel override (auto/hw/sw)
 
   - name: "ch2"
     type: "video"

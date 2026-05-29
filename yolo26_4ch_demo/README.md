@@ -50,6 +50,12 @@ Edit [`demo/config/yolo26_multich.yaml`](demo/config/yolo26_multich.yaml) to mat
 # Model file path (DXNN format)
 model: "assets/models/yolo11s-seg_optim.dxnn"
 
+# Video decoding mode (global default, can be overridden per channel)
+#   auto : HW decode when supported, otherwise SW (default)
+#   hw   : force HW decode (falls back to SW if unavailable)
+#   sw   : force SW decode
+decode: "auto"
+
 # Worker thread counts
 workers:
   preprocess: 1   # Pre-processing workers
@@ -82,7 +88,46 @@ channels:
 - `rtsp`: RTSP stream URL
 - `camera`: Camera device index (0, 1, 2, ...)
 
+## Hardware-Accelerated Decoding (GStreamer)
+
+By default each channel decodes video on the CPU (software). Setting `decode: "auto"`
+(or `"hw"`) offloads decoding to the platform hardware decoder through a GStreamer
+pipeline (`cv2.VideoCapture(..., cv2.CAP_GSTREAMER)`), reducing CPU load when running
+multiple high-resolution channels.
+
+**Platform is auto-detected:**
+
+| Platform | HW decoder | Required plugin |
+|---|---|---|
+| RK3588 (Orange Pi 5 Plus) | `mppvideodec` | included in the official Rockchip image |
+| Intel iGPU | VAAPI (`vaapidecodebin`) | `sudo apt install gstreamer1.0-vaapi` |
+| NVIDIA | `nvh264dec` / `nvv4l2decoder` | NVIDIA GStreamer / DeepStream plugins |
+
+**Prerequisites:**
+
+1. **OpenCV must be built with GStreamer support.** The PyPI `opencv-python` wheel is
+   built **without** GStreamer. Verify with:
+   ```bash
+   python -c "import cv2; print(cv2.getBuildInformation())" | grep -i gstreamer
+   ```
+   If it prints `GStreamer: NO`, install a GStreamer-enabled OpenCV (the RK3588 system
+   image already provides one; on other platforms use the distro `python3-opencv`
+   package or a custom build).
+2. Install the platform decoder plugin from the table above.
+
+If either prerequisite is missing, the demo automatically **falls back to software
+decoding** and prints the reason per channel at startup, e.g.:
+
+```
+[INFO] Channel 0: decode=SW (video) - OpenCV built without GStreamer support; using SW decode
+```
+
+> **Note on performance:** HW decoding mainly reduces CPU usage. Because frames must
+> return to CPU memory as BGR for inference/drawing, the GPU→CPU copy cost remains, so
+> gains are most visible with many channels or high-resolution streams.
+
 ## Running
+
 
 ```bash
 ./run_demo.sh

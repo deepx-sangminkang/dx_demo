@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 
 from .engine import YOLO26Engine
+from . import gst_pipeline as gst
 
 
 # ===== Per-stage drop counts (simple/intuitive version) =====
@@ -176,11 +177,31 @@ class OutputItem:
 # ===== Per-channel capture threads =====
 
 
+_hw_decode_env_lock = threading.Lock()
+_hw_decode_env: Optional[Dict[str, Any]] = None
+
+
+def _get_hw_decode_env() -> Dict[str, Any]:
+    """Detect platform / OpenCV GStreamer support once and cache the result."""
+
+    global _hw_decode_env
+    with _hw_decode_env_lock:
+        if _hw_decode_env is None:
+            _hw_decode_env = {
+                "platform": gst.detect_platform(),
+                "opencv_gstreamer": gst.opencv_has_gstreamer(),
+            }
+        return _hw_decode_env
+
+
 class CaptureThread(threading.Thread):
     """Capture thread created once per channel.
 
     - Reads frames from USB Cam / video file / RTSP and puts them into the shared input_queue.
     - DX inference and GUI updates are handled by other workers/threads.
+    - When ``decode_mode`` allows and the platform/OpenCV support HW decoding,
+      frames are decoded through a GStreamer HW pipeline; otherwise it falls
+      back to the default software ``cv2.VideoCapture`` path.
     """
 
     def __init__(
@@ -190,12 +211,17 @@ class CaptureThread(threading.Thread):
         input_queue: "queue.Queue[CaptureItem]",
         max_fps: Optional[float] = None,
         name: Optional[str] = None,
+        source_type: str = "video",
+        decode_mode: str = "auto",
     ) -> None:
         super().__init__(daemon=True, name=name or f"CaptureThread-{channel_id}")
         self.channel_id = channel_id
         self.source = source
         self.input_queue = input_queue
         self.max_fps = max_fps
+        self.source_type = source_type or "video"
+        self.decode_mode = decode_mode or "auto"
+        self.used_hw = False
         self._stop_event = threading.Event()
 
     def stop(self) -> None:
@@ -203,17 +229,45 @@ class CaptureThread(threading.Thread):
 
         self._stop_event.set()
 
-    def _read_frame(self, cap: cv2.VideoCapture) -> Optional[np.ndarray]:
-        """Read one frame, rewinding file sources when EOF is reached."""
+    def _open_capture(self) -> "cv2.VideoCapture":
+        """Open the input source, preferring HW decoding with SW fallback."""
+
+        env = _get_hw_decode_env()
+        cap, used_hw, reason = gst.open_capture(
+            source=self.source,
+            source_type=self.source_type,
+            decode_mode=self.decode_mode,
+            platform=env["platform"],
+            opencv_gstreamer=env["opencv_gstreamer"],
+        )
+        self.used_hw = used_hw
+        decode_kind = "HW (GStreamer)" if used_hw else "SW"
+        print(
+            f"[INFO] Channel {self.channel_id}: decode={decode_kind} "
+            f"({self.source_type}) - {reason}"
+        )
+        return cap
+
+    def _read_frame(self, cap: "cv2.VideoCapture") -> Optional[np.ndarray]:
+        """Read one frame, rewinding/looping file sources when EOF is reached."""
 
         ok, frame_bgr = cap.read()
         if ok:
             return frame_bgr
 
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-        ok, frame_bgr = cap.read()
-        if ok:
-            return frame_bgr
+        # Only file (video) sources loop; live sources (rtsp/camera) stop on EOF.
+        if self.source_type != "video":
+            print(
+                f"[INFO] Channel {self.channel_id}: stream ended ({self.source_type})"
+            )
+            return None
+
+        # Software backend supports in-place seek to the first frame.
+        if not self.used_hw:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ok, frame_bgr = cap.read()
+            if ok:
+                return frame_bgr
 
         print(f"[INFO] Channel {self.channel_id}: no more frames available (EOF or error)")
         return None
@@ -240,7 +294,7 @@ class CaptureThread(threading.Thread):
             time.sleep(remain)
 
     def run(self) -> None:  # pragma: no cover - runtime only
-        cap = cv2.VideoCapture(self.source)
+        cap = self._open_capture()
         if not cap.isOpened():
             print(f"[ERROR] Channel {self.channel_id}: cannot open input source - {self.source}")
             return
@@ -254,6 +308,13 @@ class CaptureThread(threading.Thread):
                 t0 = time.perf_counter()
                 frame_bgr = self._read_frame(cap)
                 if frame_bgr is None:
+                    # HW (GStreamer) backend cannot seek; reopen to loop video files.
+                    if self.used_hw and self.source_type == "video":
+                        cap.release()
+                        cap = self._open_capture()
+                        if not cap.isOpened():
+                            break
+                        continue
                     break
 
                 meta: Dict[str, Any] = {
