@@ -98,7 +98,6 @@ channels:
 |---|---|---|
 | RK3588 (Orange Pi 5 Plus) | `mppvideodec` | 공식 Rockchip 이미지에 기본 포함 |
 | Intel iGPU | VAAPI (`vaapidecodebin`) | `sudo apt install gstreamer1.0-vaapi` |
-| NVIDIA | `nvh264dec` / `nvv4l2decoder` | NVIDIA GStreamer / DeepStream 플러그인 |
 
 **사전 요구사항:**
 

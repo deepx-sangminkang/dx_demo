@@ -1,7 +1,7 @@
 """GStreamer-based hardware video decoding helpers.
 
 This module builds GStreamer pipeline strings that offload video decoding
-onto platform hardware decoders (RK3588 VPU, Intel VAAPI, NVIDIA) and is
+onto platform hardware decoders (RK3588 VPU, Intel VAAPI) and is
 consumed by ``CaptureThread`` through ``cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)``.
 
 The pipeline terminates with an ``appsink`` emitting either ``video/x-raw,format=BGR``
@@ -43,7 +43,6 @@ class Platform(enum.Enum):
 
     RK3588 = "rk3588"
     INTEL_VAAPI = "intel_vaapi"
-    NVIDIA = "nvidia"
     UNKNOWN = "unknown"
 
 
@@ -134,8 +133,6 @@ def probe_platform(elements_to_check: Optional[Iterable[str]] = None) -> Platfor
     if elements_to_check is None:
         elements_to_check = (
             "mppvideodec",
-            "nvh264dec",
-            "nvv4l2decoder",
             "vaapidecodebin",
             "vah264dec",
             _RGA_CONVERT_ELEMENT,
@@ -168,9 +165,6 @@ def detect_platform(probe: Optional[PlatformProbe] = None) -> Platform:
 
     if "rk3588" in probe.device_tree_compatible:
         return Platform.RK3588
-
-    if {"nvh264dec", "nvv4l2decoder"} & probe.available_elements:
-        return Platform.NVIDIA
 
     has_vaapi_element = bool(
         {"vaapidecodebin", "vah264dec"} & probe.available_elements
@@ -255,8 +249,6 @@ def _decoder_chain(platform: Platform, rga_convert: bool = False) -> str:
     if platform == Platform.INTEL_VAAPI:
         # vaapidecodebin handles parse+decode; vapostproc keeps conversion on GPU.
         return "vaapidecodebin ! vapostproc ! videoconvert"
-    if platform == Platform.NVIDIA:
-        return "decodebin ! videoconvert"
     raise HwDecodeUnavailable(f"no HW decoder chain for platform {platform}")
 
 

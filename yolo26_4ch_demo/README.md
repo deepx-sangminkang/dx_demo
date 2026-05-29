@@ -101,7 +101,6 @@ multiple high-resolution channels.
 |---|---|---|
 | RK3588 (Orange Pi 5 Plus) | `mppvideodec` | included in the official Rockchip image |
 | Intel iGPU | VAAPI (`vaapidecodebin`) | `sudo apt install gstreamer1.0-vaapi` |
-| NVIDIA | `nvh264dec` / `nvv4l2decoder` | NVIDIA GStreamer / DeepStream plugins |
 
 **Prerequisites:**
 

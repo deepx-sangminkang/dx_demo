@@ -42,24 +42,6 @@ def test_detect_platform_rk3588():
     assert gp.detect_platform(probe) == gp.Platform.RK3588
 
 
-def test_detect_platform_nvidia():
-    probe = gp.PlatformProbe(
-        device_tree_compatible="",
-        available_elements={"nvh264dec"},
-        dri_render_nodes=[],
-    )
-    assert gp.detect_platform(probe) == gp.Platform.NVIDIA
-
-
-def test_detect_platform_nvidia_v4l2():
-    probe = gp.PlatformProbe(
-        device_tree_compatible="",
-        available_elements={"nvv4l2decoder"},
-        dri_render_nodes=[],
-    )
-    assert gp.detect_platform(probe) == gp.Platform.NVIDIA
-
-
 def test_detect_platform_intel_vaapi():
     probe = gp.PlatformProbe(
         device_tree_compatible="",
@@ -113,17 +95,6 @@ def test_build_video_pipeline_intel():
     assert "vaapi" in pipeline or "vah264" in pipeline or "va" in pipeline
     assert "format=BGR" in pipeline
     assert "appsink" in pipeline
-
-
-def test_build_video_pipeline_nvidia():
-    pipeline = gp.build_gst_pipeline(
-        source_type="video",
-        source="/data/a.mp4",
-        platform=gp.Platform.NVIDIA,
-    )
-    assert "filesrc location=/data/a.mp4" in pipeline
-    assert "dec" in pipeline
-    assert "format=BGR" in pipeline
 
 
 # ===== build_gst_pipeline: rtsp =====

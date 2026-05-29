@@ -7,8 +7,8 @@ model: "assets/models/yolo26n-1.dxnn"
 #   hw   : force hardware decoding (still falls back to software if unavailable)
 #   sw   : force software decoding (cv2.VideoCapture default backend)
 # NOTE: hardware decoding requires an OpenCV build with GStreamer support and the
-#       platform decoder plugins (RK3588 mppvideodec / Intel gstreamer1.0-vaapi /
-#       NVIDIA nv decoders). See README for details.
+#       platform decoder plugins (RK3588 mppvideodec / Intel gstreamer1.0-vaapi).
+#       See README for details.
 decode: "auto"
 
 workers:
