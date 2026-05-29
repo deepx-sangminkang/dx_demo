@@ -4,8 +4,10 @@ This module builds GStreamer pipeline strings that offload video decoding
 onto platform hardware decoders (RK3588 VPU, Intel VAAPI, NVIDIA) and is
 consumed by ``CaptureThread`` through ``cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)``.
 
-The pipeline always terminates with an ``appsink`` emitting ``video/x-raw,format=BGR``
-so the rest of the demo keeps receiving plain BGR ``numpy`` frames.
+The pipeline terminates with an ``appsink`` emitting either ``video/x-raw,format=BGR``
+(default) or ``video/x-raw,format=RGB`` when the RGA-backed ``dxconvert`` element is
+used on RK3588. The resulting colour order is reported back through ``open_capture``
+so the rest of the demo can skip redundant ``cvtColor`` calls (RGB end-to-end).
 
 All decision logic here is pure/inject-friendly so it can be unit tested
 without any real hardware decoder present.
@@ -23,6 +25,14 @@ import cv2
 # Appsink shared properties: keep only the newest frame, never block, ignore clock.
 _APPSINK = "appsink drop=true max-buffers=1 sync=false"
 _BGR_CAPS = "video/x-raw,format=BGR"
+_RGB_CAPS = "video/x-raw,format=RGB"
+
+# Captured-frame colour orders surfaced to the rest of the demo.
+COLOR_BGR = "bgr"
+COLOR_RGB = "rgb"
+
+# RGA-backed colour-convert element shipped by the dx_stream GStreamer plugin.
+_RGA_CONVERT_ELEMENT = "dxconvert"
 
 _VALID_SOURCE_TYPES = {"video", "rtsp", "camera"}
 _VALID_DECODE_MODES = {"auto", "hw", "sw"}
@@ -128,6 +138,7 @@ def probe_platform(elements_to_check: Optional[Iterable[str]] = None) -> Platfor
             "nvv4l2decoder",
             "vaapidecodebin",
             "vah264dec",
+            _RGA_CONVERT_ELEMENT,
         )
     available = {name for name in elements_to_check if _gst_element_available(name)}
 
@@ -170,6 +181,22 @@ def detect_platform(probe: Optional[PlatformProbe] = None) -> Platform:
     return Platform.UNKNOWN
 
 
+def rga_convert_available(platform: Optional[Platform] = None) -> bool:
+    """Return True when the RGA-backed ``dxconvert`` element can offload colour
+    conversion on RK3588.
+
+    Only RK3588 ships the RGA hardware that ``dxconvert`` accelerates; on other
+    platforms the element (even if present) would fall back to libyuv, so we
+    keep using the standard ``videoconvert`` chain there.
+    """
+
+    if platform is None:
+        platform = detect_platform()
+    if platform != Platform.RK3588:
+        return False
+    return _gst_element_available(_RGA_CONVERT_ELEMENT)
+
+
 # ===== Decode decision (fallback policy) =====
 
 
@@ -209,11 +236,21 @@ def resolve_decode(
 # ===== Pipeline construction =====
 
 
-def _decoder_chain(platform: Platform) -> str:
-    """Decoder + color-convert element chain that yields a BGR-convertible stream."""
+def _decoder_chain(platform: Platform, rga_convert: bool = False) -> str:
+    """Decoder + color-convert element chain feeding the appsink tail.
+
+    When ``rga_convert`` is set on RK3588, the RGA-backed ``dxconvert`` element
+    performs the NV12->RGB conversion on hardware (offloading the CPU) and the
+    caller emits ``RGB`` caps; otherwise the standard CPU ``videoconvert`` is
+    used and ``BGR`` caps are emitted.
+    """
 
     if platform == Platform.RK3588:
-        # mppvideodec outputs NV12; mpp's RGA-backed videoconvert handles NV12->BGR.
+        # mppvideodec outputs NV12.
+        if rga_convert:
+            # dxconvert (librga) does NV12->RGB on the RGA hardware.
+            return "mppvideodec ! dxconvert"
+        # mpp's RGA-backed videoconvert handles NV12->BGR.
         return "mppvideodec ! videoconvert"
     if platform == Platform.INTEL_VAAPI:
         # vaapidecodebin handles parse+decode; vapostproc keeps conversion on GPU.
@@ -221,6 +258,24 @@ def _decoder_chain(platform: Platform) -> str:
     if platform == Platform.NVIDIA:
         return "decodebin ! videoconvert"
     raise HwDecodeUnavailable(f"no HW decoder chain for platform {platform}")
+
+
+def hw_output_color_format(
+    source_type: str, platform: Platform, rga_convert: bool = False
+) -> str:
+    """Colour order of frames produced by the HW pipeline.
+
+    Only the RK3588 ``dxconvert`` path on file/RTSP sources emits ``RGB``; every
+    other HW path emits ``BGR``.
+    """
+
+    if (
+        rga_convert
+        and platform == Platform.RK3588
+        and source_type in {"video", "rtsp"}
+    ):
+        return COLOR_RGB
+    return COLOR_BGR
 
 
 def _camera_device(source: Union[int, str]) -> str:
@@ -238,8 +293,13 @@ def build_gst_pipeline(
     source_type: str,
     source: Union[int, str],
     platform: Platform,
+    rga_convert: bool = False,
 ) -> str:
-    """Build a GStreamer launch string for HW-accelerated decoding to BGR frames."""
+    """Build a GStreamer launch string for HW-accelerated decoding.
+
+    The appsink emits ``RGB`` when the RGA ``dxconvert`` path is selected on
+    RK3588 (file/RTSP), otherwise ``BGR``.
+    """
 
     if platform == Platform.UNKNOWN:
         raise HwDecodeUnavailable("cannot build HW decode pipeline on unknown platform")
@@ -247,15 +307,18 @@ def build_gst_pipeline(
     if source_type not in _VALID_SOURCE_TYPES:
         raise ValueError(f"unsupported source type: {source_type!r}")
 
-    decoder = _decoder_chain(platform)
-    tail = f"{_BGR_CAPS} ! {_APPSINK}"
+    color_format = hw_output_color_format(source_type, platform, rga_convert)
+    caps = _RGB_CAPS if color_format == COLOR_RGB else _BGR_CAPS
+    tail = f"{caps} ! {_APPSINK}"
 
     if source_type == "video":
+        decoder = _decoder_chain(platform, rga_convert)
         return (
             f"filesrc location={source} ! parsebin ! {decoder} ! {tail}"
         )
 
     if source_type == "rtsp":
+        decoder = _decoder_chain(platform, rga_convert)
         # depay/parse are codec specific; default to H.264. H.265 streams can be
         # supported later by branching on caps.
         return (
@@ -263,7 +326,8 @@ def build_gst_pipeline(
             f"rtph264depay ! h264parse ! {decoder} ! {tail}"
         )
 
-    # camera
+    # camera: keep the simple CPU videoconvert path (v4l2 raw formats are not
+    # guaranteed to be dxconvert-compatible), always producing BGR.
     device = _camera_device(source)
     return f"v4l2src device={device} ! videoconvert ! {tail}"
 
@@ -277,12 +341,15 @@ def open_capture(
     decode_mode: str,
     platform: Platform,
     opencv_gstreamer: bool,
+    rga_convert: bool = False,
     video_capture_factory: Optional[Callable[..., "cv2.VideoCapture"]] = None,
-) -> Tuple["cv2.VideoCapture", bool, str]:
+) -> Tuple["cv2.VideoCapture", bool, str, str]:
     """Open a ``cv2.VideoCapture``, preferring HW decode with SW fallback.
 
-    Returns ``(capture, used_hw, reason)``. ``capture`` may be unopened if even
-    the software fallback fails; the caller is expected to check ``isOpened()``.
+    Returns ``(capture, used_hw, reason, color_format)``. ``color_format`` is
+    ``"rgb"`` only when the RGA ``dxconvert`` path is actually used, otherwise
+    ``"bgr"``. ``capture`` may be unopened if even the software fallback fails;
+    the caller is expected to check ``isOpened()``.
     """
 
     if video_capture_factory is None:
@@ -292,10 +359,13 @@ def open_capture(
 
     if decision.use_hw:
         try:
-            pipeline = build_gst_pipeline(source_type, source, platform)
+            pipeline = build_gst_pipeline(source_type, source, platform, rga_convert)
             cap = video_capture_factory(pipeline, cv2.CAP_GSTREAMER)
             if cap is not None and cap.isOpened():
-                return cap, True, decision.reason
+                color_format = hw_output_color_format(
+                    source_type, platform, rga_convert
+                )
+                return cap, True, decision.reason, color_format
             reason = (
                 f"HW decode pipeline failed to open; falling back to SW "
                 f"(platform={platform.value})"
@@ -306,4 +376,4 @@ def open_capture(
         reason = decision.reason
 
     cap = video_capture_factory(source)
-    return cap, False, reason
+    return cap, False, reason, COLOR_BGR

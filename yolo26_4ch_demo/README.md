@@ -115,16 +115,27 @@ multiple high-resolution channels.
    package or a custom build).
 2. Install the platform decoder plugin from the table above.
 
+**RGA-accelerated colour conversion (RK3588):**
+
+On RK3588, when the dx_stream GStreamer plugin's `dxconvert` element is available, the
+demo inserts it into the decode pipeline so the **NV12→RGB conversion runs on the RGA
+hardware** instead of the CPU. The pipeline then delivers `RGB` frames and the demo runs
+**RGB end-to-end**, skipping the two redundant `cvtColor` calls (preprocess and paint).
+This is detected automatically (`gst-inspect-1.0 dxconvert`); if `dxconvert` is missing,
+the demo falls back to the CPU `videoconvert`→`BGR` path. The captured colour order is
+reported per channel at startup, e.g. `decode=HW (GStreamer) color=rgb (video)`.
+
 If either prerequisite is missing, the demo automatically **falls back to software
 decoding** and prints the reason per channel at startup, e.g.:
 
 ```
-[INFO] Channel 0: decode=SW (video) - OpenCV built without GStreamer support; using SW decode
+[INFO] Channel 0: decode=SW color=bgr (video) - OpenCV built without GStreamer support; using SW decode
 ```
 
-> **Note on performance:** HW decoding mainly reduces CPU usage. Because frames must
-> return to CPU memory as BGR for inference/drawing, the GPU→CPU copy cost remains, so
-> gains are most visible with many channels or high-resolution streams.
+> **Note on performance:** HW decoding reduces CPU usage. On RK3588 the RGA `dxconvert`
+> path additionally offloads colour conversion and removes the two CPU `cvtColor` steps,
+> which directly relieves the preprocess bottleneck (the main cause of input drop with
+> many high-resolution channels).
 
 ## Running
 

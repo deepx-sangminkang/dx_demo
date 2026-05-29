@@ -200,6 +200,76 @@ def test_build_pipeline_unsupported_type_raises():
         )
 
 
+# ===== build_gst_pipeline: RGA dxconvert (RGB) path =====
+
+
+def test_build_video_pipeline_rk3588_rga_outputs_rgb():
+    pipeline = gp.build_gst_pipeline(
+        source_type="video",
+        source="/data/a.mp4",
+        platform=gp.Platform.RK3588,
+        rga_convert=True,
+    )
+    assert "mppvideodec" in pipeline
+    assert "dxconvert" in pipeline
+    assert "format=RGB" in pipeline
+    assert "format=BGR" not in pipeline
+
+
+def test_build_rtsp_pipeline_rk3588_rga_outputs_rgb():
+    pipeline = gp.build_gst_pipeline(
+        source_type="rtsp",
+        source="rtsp://10.0.0.1/s",
+        platform=gp.Platform.RK3588,
+        rga_convert=True,
+    )
+    assert "dxconvert" in pipeline
+    assert "format=RGB" in pipeline
+
+
+def test_build_camera_pipeline_rk3588_rga_stays_bgr():
+    # Camera path keeps the CPU videoconvert->BGR chain even with rga_convert.
+    pipeline = gp.build_gst_pipeline(
+        source_type="camera",
+        source=0,
+        platform=gp.Platform.RK3588,
+        rga_convert=True,
+    )
+    assert "dxconvert" not in pipeline
+    assert "format=BGR" in pipeline
+
+
+def test_build_video_pipeline_non_rk3588_ignores_rga():
+    # dxconvert/RGA only applies on RK3588; other platforms stay BGR.
+    pipeline = gp.build_gst_pipeline(
+        source_type="video",
+        source="/data/a.mp4",
+        platform=gp.Platform.INTEL_VAAPI,
+        rga_convert=True,
+    )
+    assert "dxconvert" not in pipeline
+    assert "format=BGR" in pipeline
+
+
+def test_hw_output_color_format():
+    assert (
+        gp.hw_output_color_format("video", gp.Platform.RK3588, True) == gp.COLOR_RGB
+    )
+    assert (
+        gp.hw_output_color_format("rtsp", gp.Platform.RK3588, True) == gp.COLOR_RGB
+    )
+    assert (
+        gp.hw_output_color_format("camera", gp.Platform.RK3588, True) == gp.COLOR_BGR
+    )
+    assert (
+        gp.hw_output_color_format("video", gp.Platform.RK3588, False) == gp.COLOR_BGR
+    )
+    assert (
+        gp.hw_output_color_format("video", gp.Platform.INTEL_VAAPI, True)
+        == gp.COLOR_BGR
+    )
+
+
 # ===== should_use_hw_decode (fallback decision) =====
 
 
@@ -267,7 +337,7 @@ def test_open_capture_hw_success(monkeypatch):
         calls.append((arg, rest))
         return _FakeCap(True)
 
-    cap, used_hw, reason = gp.open_capture(
+    cap, used_hw, reason, color_format = gp.open_capture(
         source="/data/a.mp4",
         source_type="video",
         decode_mode="auto",
@@ -277,8 +347,26 @@ def test_open_capture_hw_success(monkeypatch):
     )
     assert used_hw is True
     assert cap.isOpened()
+    assert color_format == gp.COLOR_BGR
     # GStreamer pipeline string + CAP_GSTREAMER backend
     assert "mppvideodec" in calls[0][0]
+
+
+def test_open_capture_hw_rga_reports_rgb(monkeypatch):
+    def factory(arg, *rest):
+        return _FakeCap(True)
+
+    cap, used_hw, reason, color_format = gp.open_capture(
+        source="/data/a.mp4",
+        source_type="video",
+        decode_mode="auto",
+        platform=gp.Platform.RK3588,
+        opencv_gstreamer=True,
+        rga_convert=True,
+        video_capture_factory=factory,
+    )
+    assert used_hw is True
+    assert color_format == gp.COLOR_RGB
 
 
 def test_open_capture_hw_open_fails_falls_back_to_sw(monkeypatch):
@@ -289,17 +377,20 @@ def test_open_capture_hw_open_fails_falls_back_to_sw(monkeypatch):
         # First (HW) call fails, second (SW) call succeeds
         return _FakeCap(len(calls) >= 2)
 
-    cap, used_hw, reason = gp.open_capture(
+    cap, used_hw, reason, color_format = gp.open_capture(
         source="/data/a.mp4",
         source_type="video",
         decode_mode="auto",
         platform=gp.Platform.RK3588,
         opencv_gstreamer=True,
+        rga_convert=True,
         video_capture_factory=factory,
     )
     assert used_hw is False
     assert cap.isOpened()
     assert len(calls) == 2
+    # SW fallback is always BGR regardless of the requested RGA path.
+    assert color_format == gp.COLOR_BGR
     # SW path opens the raw source
     assert calls[1][0] == "/data/a.mp4"
 
@@ -311,7 +402,7 @@ def test_open_capture_sw_mode_skips_hw(monkeypatch):
         calls.append((arg, rest))
         return _FakeCap(True)
 
-    cap, used_hw, reason = gp.open_capture(
+    cap, used_hw, reason, color_format = gp.open_capture(
         source="/data/a.mp4",
         source_type="video",
         decode_mode="sw",
@@ -320,6 +411,7 @@ def test_open_capture_sw_mode_skips_hw(monkeypatch):
         video_capture_factory=factory,
     )
     assert used_hw is False
+    assert color_format == gp.COLOR_BGR
     assert len(calls) == 1
     assert calls[0][0] == "/data/a.mp4"
 
@@ -331,7 +423,7 @@ def test_open_capture_no_gstreamer_uses_sw(monkeypatch):
         calls.append((arg, rest))
         return _FakeCap(True)
 
-    cap, used_hw, reason = gp.open_capture(
+    cap, used_hw, reason, color_format = gp.open_capture(
         source="/data/a.mp4",
         source_type="video",
         decode_mode="auto",
@@ -340,4 +432,5 @@ def test_open_capture_no_gstreamer_uses_sw(monkeypatch):
         video_capture_factory=factory,
     )
     assert used_hw is False
+    assert color_format == gp.COLOR_BGR
     assert calls[0][0] == "/data/a.mp4"

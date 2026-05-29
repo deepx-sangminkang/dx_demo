@@ -111,16 +111,25 @@ channels:
    이미 제공함. 그 외 플랫폼은 배포판 `python3-opencv` 패키지 또는 커스텀 빌드 사용).
 2. 위 표의 플랫폼별 디코더 플러그인을 설치하세요.
 
+**RGA 가속 색변환 (RK3588):**
+
+RK3588에서 dx_stream GStreamer 플러그인의 `dxconvert` 엘리먼트를 사용할 수 있으면, 데모는
+이를 디코드 파이프라인에 삽입해 **NV12→RGB 변환을 CPU가 아닌 RGA 하드웨어에서** 수행합니다.
+이때 파이프라인은 `RGB` 프레임을 전달하고 데모는 **RGB end-to-end**로 동작하여, 중복되던
+`cvtColor` 2회(preprocess, paint)를 생략합니다. 자동으로 감지되며(`gst-inspect-1.0 dxconvert`),
+`dxconvert`가 없으면 CPU `videoconvert`→`BGR` 경로로 폴백합니다. 캡처된 색 순서는 시작 시
+채널별로 출력됩니다. 예: `decode=HW (GStreamer) color=rgb (video)`.
+
 두 조건 중 하나라도 충족되지 않으면 데모는 자동으로 **소프트웨어 디코딩으로 폴백**하며,
 시작 시 채널별로 이유를 출력합니다. 예:
 
 ```
-[INFO] Channel 0: decode=SW (video) - OpenCV built without GStreamer support; using SW decode
+[INFO] Channel 0: decode=SW color=bgr (video) - OpenCV built without GStreamer support; using SW decode
 ```
 
-> **성능 참고:** HW 디코딩은 주로 CPU 사용량을 줄여줍니다. 추론/드로잉을 위해 프레임이
-> 결국 CPU 메모리에 BGR로 돌아와야 하므로 GPU→CPU 복사 비용은 남으며, 채널 수가 많거나
-> 고해상도일수록 효과가 큽니다.
+> **성능 참고:** HW 디코딩은 CPU 사용량을 줄여줍니다. RK3588의 RGA `dxconvert` 경로는
+> 추가로 색변환까지 오프로드하고 CPU `cvtColor` 2회를 제거하므로, 고해상도 다채널에서
+> input drop의 주원인인 preprocess 병목을 직접 완화합니다.
 
 ## 실행 방법
 

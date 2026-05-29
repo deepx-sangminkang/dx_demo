@@ -191,18 +191,28 @@ class YOLO26Engine:
 
         return img, (top, left)
 
-    def preprocess(self, frame_bgr: np.ndarray) -> Tuple[np.ndarray, Dict[str, Any]]:
+    def preprocess(
+        self, frame: np.ndarray, color_format: str = "bgr"
+    ) -> Tuple[np.ndarray, Dict[str, Any]]:
         """Preprocess a single frame.
+
+        Args:
+          frame: captured frame. Assumed BGR unless ``color_format`` is ``"rgb"``
+            (e.g. when the RGA dxconvert HW decode path already produced RGB),
+            in which case the BGR->RGB conversion is skipped.
 
         Returns:
           - input_tensor: input tensor to pass to run_async (model input size)
           - meta: information needed for postprocessing (original image size, pad, gain, etc.)
         """
 
-        img_height, img_width = frame_bgr.shape[:2]
+        img_height, img_width = frame.shape[:2]
 
-        # BGR → RGB
-        img_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        # Convert to RGB only when the source is not already RGB.
+        if color_format == "rgb":
+            img_rgb = frame
+        else:
+            img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         # Apply letterbox (maintain aspect ratio + padding)
         input_tensor, (pad_top, pad_left) = self.letterbox(

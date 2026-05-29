@@ -144,8 +144,9 @@ class CaptureItem:
     """Data passed from capture thread to preprocess_worker.
 
     channel_id: identifies which channel the frame came from
-    frame_bgr: original BGR frame (kept for visualisation)
-    meta: supplementary information such as timestamps
+    frame_bgr: original captured frame (BGR by default; RGB when the RGA
+        dxconvert HW path is active - see ``meta["color_format"]``)
+    meta: supplementary information such as timestamps and ``color_format``
     """
 
     channel_id: int
@@ -187,9 +188,11 @@ def _get_hw_decode_env() -> Dict[str, Any]:
     global _hw_decode_env
     with _hw_decode_env_lock:
         if _hw_decode_env is None:
+            platform = gst.detect_platform()
             _hw_decode_env = {
-                "platform": gst.detect_platform(),
+                "platform": platform,
                 "opencv_gstreamer": gst.opencv_has_gstreamer(),
+                "rga_convert": gst.rga_convert_available(platform),
             }
         return _hw_decode_env
 
@@ -222,6 +225,9 @@ class CaptureThread(threading.Thread):
         self.source_type = source_type or "video"
         self.decode_mode = decode_mode or "auto"
         self.used_hw = False
+        # Colour order of frames this thread produces ("bgr" or "rgb"); the RGA
+        # dxconvert HW path on RK3588 yields RGB so downstream cvtColor is skipped.
+        self.color_format = gst.COLOR_BGR
         self._stop_event = threading.Event()
 
     def stop(self) -> None:
@@ -233,18 +239,20 @@ class CaptureThread(threading.Thread):
         """Open the input source, preferring HW decoding with SW fallback."""
 
         env = _get_hw_decode_env()
-        cap, used_hw, reason = gst.open_capture(
+        cap, used_hw, reason, color_format = gst.open_capture(
             source=self.source,
             source_type=self.source_type,
             decode_mode=self.decode_mode,
             platform=env["platform"],
             opencv_gstreamer=env["opencv_gstreamer"],
+            rga_convert=env["rga_convert"],
         )
         self.used_hw = used_hw
+        self.color_format = color_format
         decode_kind = "HW (GStreamer)" if used_hw else "SW"
         print(
             f"[INFO] Channel {self.channel_id}: decode={decode_kind} "
-            f"({self.source_type}) - {reason}"
+            f"color={color_format} ({self.source_type}) - {reason}"
         )
         return cap
 
@@ -320,6 +328,7 @@ class CaptureThread(threading.Thread):
                 meta: Dict[str, Any] = {
                     "t_read": time.perf_counter() - t0,
                     "ts": time.time(),
+                    "color_format": self.color_format,
                 }
 
                 item = CaptureItem(
@@ -367,7 +376,8 @@ def preprocess_worker(
             continue
 
         t0 = time.perf_counter()
-        input_tensor, meta_pre = engine.preprocess(item.frame_bgr)
+        color_format = item.meta.get("color_format", "bgr")
+        input_tensor, meta_pre = engine.preprocess(item.frame_bgr, color_format)
         item.meta.update(meta_pre)
         item.meta["t_preprocess"] = time.perf_counter() - t0
 

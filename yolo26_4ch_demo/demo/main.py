@@ -56,18 +56,25 @@ class VideoWidget(QtWidgets.QWidget):
         self.setMinimumSize(320, 240)
         self.setStyleSheet("background-color: black;")
         self._latest_frame: Optional[np.ndarray] = None
+        # Colour order of the stored frame ("bgr" or "rgb").
+        self._frame_color_format: str = "bgr"
         # Text overlay for per-channel statistics
         # (FPS, processed frame count, dropped frame count)
         self._stats_text: str = ""
 
     @QtCore.Slot(np.ndarray)
-    def set_frame(self, frame_bgr: np.ndarray) -> None:
-        """Receives a BGR image and stores it in the internal buffer."""
+    def set_frame(self, frame: np.ndarray, color_format: str = "bgr") -> None:
+        """Receives an image and stores it in the internal buffer.
 
-        if frame_bgr is None:
+        ``color_format`` records whether the frame is BGR (default) or RGB so
+        ``paintEvent`` can avoid a redundant colour conversion.
+        """
+
+        if frame is None:
             return
 
-        self._latest_frame = frame_bgr
+        self._latest_frame = frame
+        self._frame_color_format = color_format
 
     def update_stats_text(self, text: str) -> None:
         """Stores a stats string passed from outside for overlay use.
@@ -82,7 +89,12 @@ class VideoWidget(QtWidgets.QWidget):
         rect = self.rect()
 
         if self._latest_frame is not None:
-            frame_rgb = cv2.cvtColor(self._latest_frame, cv2.COLOR_BGR2RGB)
+            # Skip the BGR->RGB conversion when the frame is already RGB
+            # (RGA dxconvert HW decode path).
+            if self._frame_color_format == "rgb":
+                frame_rgb = self._latest_frame
+            else:
+                frame_rgb = cv2.cvtColor(self._latest_frame, cv2.COLOR_BGR2RGB)
             h, w, ch = frame_rgb.shape
             bytes_per_line = ch * w
             qimg = QtGui.QImage(
@@ -662,7 +674,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 latest_meta = self._latest_meta.get(channel_id, {})
 
             if latest_frame is not None:
-                self.video_widgets[channel_id].set_frame(latest_frame)
+                color_format = (latest_meta or {}).get("color_format", "bgr")
+                self.video_widgets[channel_id].set_frame(latest_frame, color_format)
 
             # Update performance metrics and per-channel stats
             if latest_meta is not None:
