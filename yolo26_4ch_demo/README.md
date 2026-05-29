@@ -111,7 +111,12 @@ multiple high-resolution channels.
    ```
    If it prints `GStreamer: NO`, install a GStreamer-enabled OpenCV (the RK3588 system
    image already provides one; on other platforms use the distro `python3-opencv`
-   package or a custom build).
+   package or a custom build). **`install.sh` enforces this automatically** via
+   `scripts/ensure_gstreamer_opencv.sh`: it verifies GStreamer support and, when
+   missing, installs the distro `python3-opencv` + GStreamer plugins and removes the
+   shadowing pip wheel; the install **fails with guidance** if a GStreamer-enabled
+   OpenCV still cannot be provided (e.g. inside a venv created without
+   `--system-site-packages`).
 2. Install the platform decoder plugin from the table above.
 
 **RGA-accelerated colour conversion (RK3588):**

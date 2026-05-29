@@ -108,6 +108,10 @@ channels:
    ```
    `GStreamer: NO`로 표시되면 GStreamer 지원 OpenCV를 설치하세요(RK3588 시스템 이미지는
    이미 제공함. 그 외 플랫폼은 배포판 `python3-opencv` 패키지 또는 커스텀 빌드 사용).
+   **`install.sh`가 이를 자동으로 강제**합니다(`scripts/ensure_gstreamer_opencv.sh`):
+   GStreamer 지원 여부를 검증하고, 없으면 배포판 `python3-opencv` + GStreamer 플러그인을
+   설치하고 충돌하는 pip 휠을 제거합니다. 그래도 GStreamer 지원 OpenCV를 확보하지 못하면
+   (예: `--system-site-packages` 없이 만든 venv) **안내 메시지와 함께 설치를 실패**시킵니다.
 2. 위 표의 플랫폼별 디코더 플러그인을 설치하세요.
 
 **RGA 가속 색변환 (RK3588):**

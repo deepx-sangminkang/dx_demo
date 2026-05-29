@@ -3,11 +3,11 @@
 # - Only PyPI-installable packages are listed here
 
 numpy>=1.19.5
-# NOTE: the PyPI `opencv-python` wheel is built WITHOUT GStreamer support, so
-# hardware decoding (decode: hw/auto) cannot use the GStreamer backend with it.
-# For HW decoding, install a GStreamer-enabled OpenCV (e.g. distro `python3-opencv`
-# or a custom build). See README "Hardware-Accelerated Decoding".
-opencv-python>=4.5.1
+# OpenCV is intentionally NOT pinned here. The PyPI `opencv-python` wheel is
+# built WITHOUT GStreamer, which disables hardware decoding (decode: hw/auto).
+# `install.sh` runs scripts/ensure_gstreamer_opencv.sh to enforce a
+# GStreamer-enabled OpenCV (distro python3-opencv or a custom build).
+# See README "Hardware-Accelerated Decoding".
 packaging>=20.0
 PySide6>=6.5.0
 PyYAML>=6.0
