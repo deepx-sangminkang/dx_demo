@@ -62,6 +62,7 @@ class StreamPipeline:
 
         self._gst = gst
         self._extract = sample_extractor
+        self._sample_count = 0
         self._pipeline = None
         self._loop = None
         self._thread: Optional[threading.Thread] = None
@@ -118,12 +119,41 @@ class StreamPipeline:
                 return self._gst.FlowReturn.OK
 
             detections = self.bridge.detections_for_buffer(gst_buffer)
+            self._log_detection_diagnostics(detections)
             self.frame_callback(self.channel_id, frame)
             self.detection_callback(self.channel_id, detections)
         except Exception as exc:
             logger.exception("stream sample dispatch failed (ch %s): %s",
                              self.channel_id, exc)
         return self._gst.FlowReturn.OK
+
+    # ----- detection diagnostics (host-testable) -----
+
+    #: Log the detection state for this many initial samples per channel, then
+    #: only every Nth sample, so a blank-overlay run reveals whether the issue is
+    #: missing metadata vs. zero detected objects vs. an overlay problem.
+    _DEBUG_FIRST = 3
+    _DEBUG_EVERY = 300
+
+    def _should_log_sample(self, count: int) -> bool:
+        if count <= self._DEBUG_FIRST:
+            return True
+        return count % self._DEBUG_EVERY == 0
+
+    def _log_detection_diagnostics(self, detections) -> None:
+        """Print metadata/detection state for diagnostic samples."""
+
+        self._sample_count += 1
+        if not self._should_log_sample(self._sample_count):
+            return
+        meta_present = getattr(self.bridge, "last_meta_present", None)
+        n = int(detections.shape[0]) if hasattr(detections, "shape") else len(detections)
+        print(
+            f"[DXS-DEBUG] ch{self.channel_id} sample#{self._sample_count}: "
+            f"frame_meta_present={meta_present} detections={n}",
+            file=sys.stderr,
+            flush=True,
+        )
 
     # ----- bus diagnostics (host-testable formatting + dispatch) -----
 

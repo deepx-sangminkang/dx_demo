@@ -130,3 +130,33 @@ def test_dispatch_bus_error_without_callback_does_not_raise():
     pipe = _make_pipe(channel_id=0, error_callback=None)
     # Should log/print but never raise even with no callback wired.
     pipe._dispatch_bus_error("src", "boom", "dbg")
+
+
+def test_should_log_sample_first_n_then_periodic():
+    pipe = _make_pipe()
+    assert pipe._should_log_sample(1) is True
+    assert pipe._should_log_sample(3) is True
+    assert pipe._should_log_sample(4) is False
+    assert pipe._should_log_sample(300) is True
+    assert pipe._should_log_sample(301) is False
+
+
+def test_on_new_sample_logs_detection_diagnostics(capsys):
+    frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    bridge = _FakeBridge(np.ones((2, 6), dtype=np.float32))
+    bridge.last_meta_present = True
+    pipe = sp.StreamPipeline(
+        channel_id=1,
+        pipeline_str="x",
+        bridge=bridge,
+        frame_callback=lambda ch, f: None,
+        detection_callback=lambda ch, d: None,
+        gst=_FakeGst,
+        sample_extractor=lambda sample: (frame, object()),
+    )
+    pipe._on_new_sample(appsink_with_sample=object())
+    err = capsys.readouterr().err
+    assert "DXS-DEBUG" in err
+    assert "detections=2" in err
+    assert "frame_meta_present=True" in err
+

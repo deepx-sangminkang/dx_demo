@@ -43,6 +43,12 @@ class PydxsBridge:
         if pydxs_module is PydxsBridge._SENTINEL:
             pydxs_module = _try_import_pydxs()
         self._pydxs = pydxs_module
+        # Diagnostics for the last detections_for_buffer call:
+        #   last_meta_present: True/False if a frame meta was found, None when
+        #                      pydxs is unavailable or the read raised.
+        #   last_obj_count   : number of objects parsed from that meta.
+        self.last_meta_present: Optional[bool] = None
+        self.last_obj_count: int = 0
 
     @property
     def available(self) -> bool:
@@ -51,10 +57,17 @@ class PydxsBridge:
     def detections_for_buffer(self, gst_buffer) -> np.ndarray:
         """Return ``(N, 6)`` detections for a buffer, never raising."""
         if self._pydxs is None:
+            self.last_meta_present = None
+            self.last_obj_count = 0
             return _EMPTY.copy()
         try:
             frame_meta = self._pydxs.dx_get_frame_meta(hash(gst_buffer))
-            return frame_meta_to_detections(frame_meta)
+            self.last_meta_present = frame_meta is not None
+            detections = frame_meta_to_detections(frame_meta)
+            self.last_obj_count = int(detections.shape[0])
+            return detections
         except Exception as exc:  # pragma: no cover - board-only path
             logger.debug("pydxs meta read failed: %s", exc)
+            self.last_meta_present = None
+            self.last_obj_count = 0
             return _EMPTY.copy()

@@ -50,11 +50,36 @@ def test_bridge_no_meta_returns_empty():
     assert det.shape == (0, 6)
 
 
-def test_bridge_swallows_pydxs_errors():
-    class _Boom:
-        def dx_get_frame_meta(self, addr):
-            raise RuntimeError("native boom")
+def test_bridge_tracks_meta_present_and_count_when_objects_exist():
+    buf = object()
+    addr = hash(buf)
+    fake = _FakePydxs({addr: [_Obj([1, 2, 3, 4], 0.8, 7), _Obj([0, 0, 1, 1], 0.5, 2)]})
+    bridge = pb.PydxsBridge(pydxs_module=fake)
+    bridge.detections_for_buffer(buf)
+    assert bridge.last_meta_present is True
+    assert bridge.last_obj_count == 2
 
-    bridge = pb.PydxsBridge(pydxs_module=_Boom())
-    det = bridge.detections_for_buffer(object())
-    assert det.shape == (0, 6)
+
+def test_bridge_tracks_meta_present_false_when_no_meta():
+    fake = _FakePydxs({})  # dx_get_frame_meta returns None
+    bridge = pb.PydxsBridge(pydxs_module=fake)
+    bridge.detections_for_buffer(object())
+    assert bridge.last_meta_present is False
+    assert bridge.last_obj_count == 0
+
+
+def test_bridge_tracks_meta_present_true_but_zero_objects():
+    buf = object()
+    addr = hash(buf)
+    fake = _FakePydxs({addr: []})  # meta exists but no objects detected
+    bridge = pb.PydxsBridge(pydxs_module=fake)
+    bridge.detections_for_buffer(buf)
+    assert bridge.last_meta_present is True
+    assert bridge.last_obj_count == 0
+
+
+def test_bridge_unavailable_sets_meta_present_none():
+    bridge = pb.PydxsBridge(pydxs_module=None)
+    bridge.detections_for_buffer(object())
+    assert bridge.last_meta_present is None
+
