@@ -257,50 +257,45 @@ def test_on_new_sample_falls_back_to_bridge_without_stash():
     np.testing.assert_array_equal(dets[0], det)
     assert bridge.seen_buffer is appsink_buf
 
-class _SeekFlags:
-    FLUSH = 1
-    KEY_UNIT = 2
+class _State:
+    NULL = "null"
+    PLAYING = "playing"
 
 
-class _Format:
-    TIME = "time"
-
-
-class _SeekGst:
+class _RestartGst:
     FlowReturn = _FlowReturn
-    SeekFlags = _SeekFlags
-    Format = _Format
+    State = _State
 
 
 class _FakePipeline:
     def __init__(self):
-        self.seeks = []
+        self.states = []
 
-    def seek_simple(self, fmt, flags, pos):
-        self.seeks.append((fmt, flags, pos))
+    def set_state(self, state):
+        self.states.append(state)
         return True
 
 
 def test_handle_eos_loops_when_enabled():
     pipe = _make_pipe()
-    pipe._gst = _SeekGst
+    pipe._gst = _RestartGst
     pipe.loop = True
     pipe._pipeline = _FakePipeline()
 
     assert pipe._handle_eos() is True
-    assert pipe._pipeline.seeks == [
-        (_Format.TIME, _SeekFlags.FLUSH | _SeekFlags.KEY_UNIT, 0)
-    ]
+    # Looping restarts the pipeline (NULL then PLAYING) so qtdemux/decoder
+    # streaming tasks are cleanly reset instead of seek-racing into -5 errors.
+    assert pipe._pipeline.states == [_State.NULL, _State.PLAYING]
 
 
 def test_handle_eos_does_not_loop_when_disabled():
     pipe = _make_pipe()
-    pipe._gst = _SeekGst
+    pipe._gst = _RestartGst
     pipe.loop = False
     pipe._pipeline = _FakePipeline()
 
     assert pipe._handle_eos() is False
-    assert pipe._pipeline.seeks == []
+    assert pipe._pipeline.states == []
 
 
 def test_handle_eos_noop_without_pipeline():

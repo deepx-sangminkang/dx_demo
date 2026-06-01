@@ -307,19 +307,23 @@ class StreamPipeline:
         print(f"[INFO] {msg}", file=sys.stderr, flush=True)
 
     def _handle_eos(self) -> bool:
-        """Rewind the pipeline to loop the source. Returns True if it looped."""
+        """Restart the pipeline to loop the source. Returns True if it looped."""
 
         if not self.loop or self._pipeline is None:
             return False
-        self._seek_to_start()
+        self._restart_pipeline()
         return True
 
-    def _seek_to_start(self) -> None:
-        """Flush-seek the pipeline back to the first frame."""
+    def _restart_pipeline(self) -> None:
+        """Fully reset the pipeline (NULL->PLAYING) to replay from the start.
+
+        A flush-seek on EOS races the qtdemux/decoder streaming task and yields
+        ``Internal data stream error (-5)``; cycling through NULL tears those
+        tasks down cleanly so playback restarts from the first frame. The
+        appsink ``new-sample`` connection and the meta-source pad probe live on
+        the elements, so they survive the state cycle.
+        """
 
         gst = self._gst
-        self._pipeline.seek_simple(
-            gst.Format.TIME,
-            gst.SeekFlags.FLUSH | gst.SeekFlags.KEY_UNIT,
-            0,
-        )
+        self._pipeline.set_state(gst.State.NULL)
+        self._pipeline.set_state(gst.State.PLAYING)
