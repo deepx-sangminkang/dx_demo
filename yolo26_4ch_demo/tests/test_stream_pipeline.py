@@ -161,6 +161,29 @@ def test_on_new_sample_logs_detection_diagnostics(capsys):
     assert "frame_meta_present=True" in err
 
 
+def test_diagnostics_flags_reused_boxes(capsys):
+    appsink_buf = _PtsBuffer(0)
+    bridge = _FakeBridge(np.zeros((0, 6), dtype=np.float32))
+    bridge.last_meta_present = False
+    pipe = sp.StreamPipeline(
+        channel_id=1,
+        pipeline_str="x",
+        bridge=bridge,
+        frame_callback=lambda ch, f: None,
+        detection_callback=lambda ch, d: None,
+        gst=_FakeGst,
+        sample_extractor=lambda sample: (np.zeros((2, 2, 3), np.uint8), appsink_buf),
+    )
+    good = np.ones((3, 6), dtype=np.float32)
+    pipe._stash_meta(0, good)
+    pipe._on_new_sample(appsink_with_sample=object())  # stash hit, no note
+    pipe._on_new_sample(appsink_with_sample=object())  # miss -> reused
+    lines = [ln for ln in capsys.readouterr().err.splitlines() if "DXS-DEBUG" in ln]
+    assert "reused prev boxes" not in lines[0]
+    assert "frame_meta_present=False" in lines[1]
+    assert "reused prev boxes" in lines[1]
+
+
 class _PtsBuffer:
     """Minimal stand-in for a GstBuffer exposing a PTS."""
 

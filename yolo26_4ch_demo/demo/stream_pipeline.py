@@ -80,6 +80,7 @@ class StreamPipeline:
         # flash an empty overlay.
         self._last_detections = None
         self._meta_miss_streak = 0
+        self._meta_reused = False
         self._MAX_META_REUSE = 2
         self._pipeline = None
         self._loop = None
@@ -193,11 +194,13 @@ class StreamPipeline:
             if stashed is not None:
                 self._last_detections = stashed
                 self._meta_miss_streak = 0
+                self._meta_reused = False
                 return stashed
         direct = self.bridge.detections_for_buffer(gst_buffer)
         if getattr(self.bridge, "last_meta_present", False):
             self._last_detections = direct
             self._meta_miss_streak = 0
+            self._meta_reused = False
             return direct
         # No metadata for this frame from either source. Right after a loop seek
         # the PTS timeline restarts and one appsink frame can briefly desync from
@@ -206,8 +209,10 @@ class StreamPipeline:
         if (self._last_detections is not None
                 and self._meta_miss_streak < self._MAX_META_REUSE):
             self._meta_miss_streak += 1
+            self._meta_reused = True
             return self._last_detections
         self._meta_miss_streak += 1
+        self._meta_reused = False
         return direct
 
     # ----- PTS-correlated metadata stash (host-testable) -----
@@ -285,9 +290,13 @@ class StreamPipeline:
             return
         meta_present = getattr(self.bridge, "last_meta_present", None)
         n = int(detections.shape[0]) if hasattr(detections, "shape") else len(detections)
+        # When meta was missing for this frame we reuse the previous frame's
+        # detections (loop-seam glitch); flag it so the False is not mistaken for
+        # a real, visible metadata dropout.
+        note = " (reused prev boxes)" if self._meta_reused else ""
         print(
             f"[DXS-DEBUG] ch{self.channel_id} sample#{self._sample_count}: "
-            f"frame_meta_present={meta_present} detections={n}",
+            f"frame_meta_present={meta_present} detections={n}{note}",
             file=sys.stderr,
             flush=True,
         )
