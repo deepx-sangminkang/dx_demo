@@ -25,8 +25,12 @@ import numpy as np
 import yaml
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from demo.engine import YOLO26Engine
+from demo.engine import YOLO26Engine, NativeDisplayMeta
 from demo.overlay import scale_box
+from demo import native_config, native_pipeline, native_signal
+from demo.meta_adapter import filter_by_classes
+from demo.pydxs_bridge import PydxsBridge
+from demo.stream_pipeline import StreamPipeline
 from demo.workers import (
     CaptureThread,
     preprocess_worker,
@@ -607,6 +611,15 @@ class MainWindow(QtWidgets.QMainWindow):
     def _init_engine_and_workers(self, config: Dict[str, Any]) -> None:
         """Initialise the YOLO engine, queues, and threads (capture + global workers)."""
 
+        # Default containers so shutdown is safe regardless of backend.
+        self.capture_threads: List[CaptureThread] = []
+        self._threads: List[threading.Thread] = []
+        self.stream_pipelines: List[StreamPipeline] = []
+
+        if native_config.get_engine_backend(config) == "dxstream":
+            self._init_dxstream_backend(config)
+            return
+
         model_path = config["model"]
         self.engine = YOLO26Engine(model_path)
 
@@ -726,6 +739,79 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ----- Worker → GUI forwarding wrappers -----
 
+    def _init_dxstream_backend(self, config: Dict[str, Any]) -> None:
+        """Initialise the native dx_stream inference pipelines (one per channel).
+
+        Inference runs entirely in GStreamer (dxpreprocess -> dxinfer ->
+        dxpostprocess); detections are read via pydxs and fed into the same Qt
+        display path used by the legacy backend.
+        """
+
+        dxs = config.get("dxstream") or {}
+        input_size = int(dxs.get("input_size", 640))
+
+        # Lightweight overlay metadata (no NPU load in Python).
+        self.engine = NativeDisplayMeta(input_size, input_size)
+        self._build_class_filter_panel(self.engine.classes)
+        for w in self.video_widgets:
+            w.set_overlay_style(self.engine.classes, self.engine.color_palette)
+
+        pre_cfg, inf_cfg, post_cfg = native_config.build_native_cfgs(
+            config, input_size, input_size
+        )
+
+        display_size = None
+        if dxs.get("display_width") and dxs.get("display_height"):
+            display_size = (int(dxs["display_width"]), int(dxs["display_height"]))
+
+        self.bridge = PydxsBridge()
+        if not self.bridge.available:
+            print("[WARN] pydxs unavailable: detections will be empty "
+                  "(native backend requires dx_stream/pydxs on the board).")
+
+        for idx, ch_cfg in enumerate(config.get("channels", [])):
+            if not ch_cfg.get("enabled", True):
+                continue
+
+            pipeline_str = native_pipeline.build_infer_pipeline(
+                source_type=ch_cfg.get("type", "video"),
+                source=ch_cfg["source"],
+                preprocess_cfg=pre_cfg,
+                infer_cfg=inf_cfg,
+                postprocess_cfg=post_cfg,
+                appsink_name=f"sink{idx}",
+                display_size=display_size,
+            )
+            pipe = StreamPipeline(
+                channel_id=idx,
+                pipeline_str=pipeline_str,
+                bridge=self.bridge,
+                frame_callback=self._on_native_frame,
+                detection_callback=self._on_native_detections,
+                appsink_name=f"sink{idx}",
+            )
+            self.stream_pipelines.append(pipe)
+
+        for pipe in self.stream_pipelines:
+            pipe.start()
+
+    def _on_native_frame(self, channel_id: int, frame: np.ndarray) -> None:
+        """GStreamer-thread callback: forward a decoded frame to the Qt display."""
+
+        ch, out_frame, meta = native_signal.build_frame_payload(channel_id, frame)
+        self.frame_ready.emit(ch, out_frame, meta)
+
+    def _on_native_detections(
+        self, channel_id: int, detections: np.ndarray
+    ) -> None:
+        """GStreamer-thread callback: filter + forward detections to the overlay."""
+
+        detections = filter_by_classes(detections, self.get_selected_classes())
+        ch, out_det, meta = native_signal.build_detection_payload(
+            channel_id, detections
+        )
+        self.detections_ready.emit(ch, out_det, meta)
+
     def _on_display_frame_from_capture(
         self, channel_id: int, frame: np.ndarray, color_format: str
     ) -> None:
@@ -815,6 +901,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _stop_capture_threads(self) -> None:
         """Request capture threads to stop and wait briefly for exit."""
+
+        for pipe in getattr(self, "stream_pipelines", []):
+            try:
+                pipe.stop()
+            except Exception as exc:  # pragma: no cover - board glue
+                print(f"[WARN] stream pipeline stop failed: {exc}")
 
         for thread in self.capture_threads:
             if thread:

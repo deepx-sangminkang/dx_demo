@@ -19,6 +19,40 @@ import numpy as np
 from dx_engine import Configuration, InferenceEngine
 from packaging import version
 
+COCO80_CLASSES = [
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train",
+    "truck", "boat", "traffic light", "fire hydrant", "stop sign",
+    "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+    "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag",
+    "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball", "kite",
+    "baseball bat", "baseball glove", "skateboard", "surfboard",
+    "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon",
+    "bowl", "banana", "apple", "sandwich", "orange", "broccoli", "carrot",
+    "hot dog", "pizza", "donut", "cake", "chair", "couch", "potted plant",
+    "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote",
+    "keyboard", "cell phone", "microwave", "oven", "toaster", "sink",
+    "refrigerator", "book", "clock", "vase", "scissors", "teddy bear",
+    "hair drier", "toothbrush",
+]
+
+
+class NativeDisplayMeta:
+    """Lightweight overlay metadata for the dxstream backend.
+
+    Supplies class names, colour palette, and model input size **without**
+    loading the NPU model in Python (inference runs in the native dxinfer
+    element), so the Python engine doesn't contend for the NPU.
+    """
+
+    def __init__(self, input_width: int = 640, input_height: int = 640) -> None:
+        self.classes = list(COCO80_CLASSES)
+        self.color_palette = np.random.uniform(
+            0, 255, size=(len(self.classes), 3)
+        )
+        self.input_width = int(input_width)
+        self.input_height = int(input_height)
+
+
 class YOLO26Engine:
     """YOLO26 engine shared across multiple channels.
 
@@ -66,89 +100,8 @@ class YOLO26Engine:
         self.score_threshold = 0.4
 
         # COCO80 class names and colour palette
-        self.classes = [
-                        "person",
-                        "bicycle",
-                        "car",
-                        "motorcycle",
-                        "airplane",
-                        "bus",
-                        "train",
-                        "truck",
-                        "boat",
-                        "traffic light",
-                        "fire hydrant",
-                        "stop sign",
-                        "parking meter",
-                        "bench",
-                        "bird",
-                        "cat",
-                        "dog",
-                        "horse",
-                        "sheep",
-                        "cow",
-                        "elephant",
-                        "bear",
-                        "zebra",
-                        "giraffe",
-                        "backpack",
-                        "umbrella",
-                        "handbag",
-                        "tie",
-                        "suitcase",
-                        "frisbee",
-                        "skis",
-                        "snowboard",
-                        "sports ball",
-                        "kite",
-                        "baseball bat",
-                        "baseball glove",
-                        "skateboard",
-                        "surfboard",
-                        "tennis racket",
-                        "bottle",
-                        "wine glass",
-                        "cup",
-                        "fork",
-                        "knife",
-                        "spoon",
-                        "bowl",
-                        "banana",
-                        "apple",
-                        "sandwich",
-                        "orange",
-                        "broccoli",
-                        "carrot",
-                        "hot dog",
-                        "pizza",
-                        "donut",
-                        "cake",
-                        "chair",
-                        "couch",
-                        "potted plant",
-                        "bed",
-                        "dining table",
-                        "toilet",
-                        "tv",
-                        "laptop",
-                        "mouse",
-                        "remote",
-                        "keyboard",
-                        "cell phone",
-                        "microwave",
-                        "oven",
-                        "toaster",
-                        "sink",
-                        "refrigerator",
-                        "book",
-                        "clock",
-                        "vase",
-                        "scissors",
-                        "teddy bear",
-                        "hair drier",
-                        "toothbrush",
-                    ]
-        
+        self.classes = list(COCO80_CLASSES)
+
         self.color_palette = np.random.uniform(0, 255, size=(len(self.classes), 3))
 
         # Counter for tracking the number of currently in-flight async requests
