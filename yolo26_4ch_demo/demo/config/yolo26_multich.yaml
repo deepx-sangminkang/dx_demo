@@ -11,15 +11,23 @@ model: "assets/models/yolo26n-1.dxnn"
 #       See README for details.
 decode: "auto"
 
-# RGA hardware resize (PoC / RK3588 tuning).
+# RGA hardware resize (experimental PoC / RK3588 tuning). DISABLED by default.
 #   When true, a `dxscale` element resizes decoded frames to the model input
 #   size on RGA hardware, so the CPU `cv2.resize` in preprocessing is skipped.
 #   Effective only on the RK3588 RGA (dxconvert) decode path.
-#   Trade-offs: dxscale is a *stretch* resize (no aspect-ratio letterbox), and
-#   the displayed frame is also downscaled to the model size, so detection
-#   accuracy and display sharpness may drop. Use to measure whether the
-#   preprocess bottleneck (input drop) is relieved. Set false to revert.
-rga_resize: true
+#
+#   KNOWN ISSUE (RK3588): with dxscale inserted, the
+#     mppvideodec -> dxscale -> dxconvert -> (pinned RGB caps) -> appsink
+#   pipeline can fail caps negotiation. dxscale is a GstBaseTransform that needs
+#   stable caps for RGA buffer-pool allocation; negotiation failure surfaces as
+#   `GST_IS_CAPS failed` / `structure != NULL` assertions and the HW pipeline
+#   never reaches PLAYING. Keep this false unless you are actively debugging the
+#   dxscale path. For real throughput gains use `engine_backend: dxstream` below.
+#
+#   Trade-offs (when it does work): dxscale is a *stretch* resize (no
+#   aspect-ratio letterbox) and the displayed frame is downscaled to the model
+#   size, so detection accuracy and display sharpness may drop.
+rga_resize: false
 
 # Inference backend selector.
 #   legacy   : Python dx_engine workers (cv2 capture -> preprocess -> infer ->
