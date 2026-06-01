@@ -21,6 +21,27 @@ decode: "auto"
 #   preprocess bottleneck (input drop) is relieved. Set false to revert.
 rga_resize: true
 
+# Inference backend selector.
+#   legacy   : Python dx_engine workers (cv2 capture -> preprocess -> infer ->
+#              postprocess in Python). Default; works everywhere.
+#   dxstream : native dx_stream GStreamer pipeline (dxpreprocess -> dxinfer ->
+#              dxpostprocess) with detections read via pydxs. Requires the
+#              dx_stream plugins + pydxs on the board. Frames/detections are fed
+#              to the same Qt display path.
+engine_backend: "legacy"
+
+# Native dx_stream backend settings (used only when engine_backend: dxstream).
+dxstream:
+  # dxpostprocess decoder library for YOLO26 object detection.
+  postprocess_library: "/usr/local/share/gstdxstream/lib/libpostprocess_yolo26od.so"
+  postprocess_function: "PostProcess"
+  keep_ratio: true
+  pad_value: 114
+  # Optional display downscale (RGA dxscale) applied after postprocess.
+  # display_width: 960
+  # display_height: 540
+
+
 workers:
   # rockpi profiling showed read~90 but pre=inf=draw~30 (per-stage totals):
   # the inference pipeline is the bottleneck while the NPU itself is starved.
