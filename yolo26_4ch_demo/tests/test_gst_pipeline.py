@@ -366,11 +366,19 @@ def test_should_use_hw_decode_hw_mode_no_gstreamer_falls_back():
 
 
 class _FakeCap:
-    def __init__(self, opened: bool):
+    def __init__(self, opened: bool, grab_ok: bool = True):
         self._opened = opened
+        self._grab_ok = grab_ok
+        self.released = False
 
     def isOpened(self):
         return self._opened
+
+    def grab(self):
+        return self._grab_ok
+
+    def release(self):
+        self.released = True
 
 
 def test_open_capture_hw_success(monkeypatch):
@@ -436,6 +444,41 @@ def test_open_capture_hw_open_fails_falls_back_to_sw(monkeypatch):
     assert color_format == gp.COLOR_BGR
     # SW path opens the raw source
     assert calls[1][0] == "/data/a.mp4"
+
+
+def test_open_capture_hw_opens_but_no_frames_falls_back_to_sw(monkeypatch):
+    """A HW pipeline that reports isOpened() but yields no frames (caps never
+    negotiated) must be released and fall back to SW decode."""
+
+    caps = []
+
+    def factory(arg, *rest):
+        # First (HW) call: opens but grab() fails (no frames flow).
+        # Second (SW) call: a normal working capture.
+        if not caps:
+            cap = _FakeCap(True, grab_ok=False)
+        else:
+            cap = _FakeCap(True, grab_ok=True)
+        caps.append((cap, arg))
+        return cap
+
+    cap, used_hw, reason, color_format = gp.open_capture(
+        source="/data/a.mp4",
+        source_type="video",
+        decode_mode="auto",
+        platform=gp.Platform.RK3588,
+        opencv_gstreamer=True,
+        rga_convert=True,
+        video_capture_factory=factory,
+    )
+    assert used_hw is False
+    assert cap.isOpened()
+    assert color_format == gp.COLOR_BGR
+    assert len(caps) == 2
+    # The dead HW capture must be released before falling back.
+    assert caps[0][0].released is True
+    # SW fallback opens the raw source.
+    assert caps[1][1] == "/data/a.mp4"
 
 
 def test_open_capture_sw_mode_skips_hw(monkeypatch):

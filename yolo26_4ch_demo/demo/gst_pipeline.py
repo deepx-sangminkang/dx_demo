@@ -363,6 +363,30 @@ def build_gst_pipeline(
 # ===== Capture opening with graceful fallback =====
 
 
+def _hw_capture_yields_frame(cap: "cv2.VideoCapture") -> bool:
+    """Return True if the (opened) HW capture can actually produce a frame.
+
+    A GStreamer HW pipeline may report ``isOpened()`` even when caps never get
+    negotiated and no buffer ever reaches the appsink (e.g. the decoder element
+    fails to link on the running device). In that state OpenCV emits
+    ``cannot query video width/height`` warnings and every ``read()`` returns
+    ``False``, which the rest of the demo cannot distinguish from a genuine HW
+    decode. Grabbing one frame here lets us detect that dead-pipeline case and
+    fall back to software decoding instead of spinning in a reopen loop.
+
+    Captures without a ``grab`` method (e.g. lightweight test doubles) are
+    assumed to work so pure-logic tests remain unaffected.
+    """
+
+    grab = getattr(cap, "grab", None)
+    if grab is None:
+        return True
+    try:
+        return bool(grab())
+    except Exception:
+        return False
+
+
 def open_capture(
     source: Union[int, str],
     source_type: str,
@@ -396,14 +420,28 @@ def open_capture(
             )
             cap = video_capture_factory(pipeline, cv2.CAP_GSTREAMER)
             if cap is not None and cap.isOpened():
-                color_format = hw_output_color_format(
-                    source_type, platform, rga_convert
+                if _hw_capture_yields_frame(cap):
+                    color_format = hw_output_color_format(
+                        source_type, platform, rga_convert
+                    )
+                    return cap, True, decision.reason, color_format
+                # Opened but no buffer ever reached the appsink: release the
+                # dead pipeline and fall back to software decoding.
+                release = getattr(cap, "release", None)
+                if callable(release):
+                    try:
+                        release()
+                    except Exception:
+                        pass
+                reason = (
+                    f"HW decode pipeline opened but produced no frames; "
+                    f"falling back to SW (platform={platform.value})"
                 )
-                return cap, True, decision.reason, color_format
-            reason = (
-                f"HW decode pipeline failed to open; falling back to SW "
-                f"(platform={platform.value})"
-            )
+            else:
+                reason = (
+                    f"HW decode pipeline failed to open; falling back to SW "
+                    f"(platform={platform.value})"
+                )
         except (HwDecodeUnavailable, ValueError) as exc:
             reason = f"HW decode unavailable ({exc}); falling back to SW"
     else:
