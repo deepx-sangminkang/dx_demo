@@ -75,17 +75,28 @@ run_stage "2) + mppvideodec (HW decode) -> fakesink" \
 
 run_stage "3) + videoconvert -> BGR appsink (CPU colour, demo SW-ish path)" \
     filesrc location="${VIDEO}" ! parsebin ! mppvideodec ! videoconvert \
-    ! video/x-raw,format=BGR ! identity eos-after=30 ! appsink sync=false
+    ! video/x-raw,format=BGR ! identity eos-after=30 \
+    ! appsink drop=true max-buffers=1 sync=false
 
 run_stage "4) + dxconvert -> RGB appsink (RGA colour, demo HW path)" \
     filesrc location="${VIDEO}" ! parsebin ! mppvideodec ! dxconvert \
-    ! video/x-raw,format=RGB ! identity eos-after=30 ! appsink sync=false
+    ! video/x-raw,format=RGB ! identity eos-after=30 \
+    ! appsink drop=true max-buffers=1 sync=false
+
+run_stage "5) demo HW path + audio drained to fakesink (multiqueue fix)" \
+    filesrc location="${VIDEO}" ! parsebin name=pb \
+    pb. ! mppvideodec ! dxconvert ! video/x-raw,format=RGB ! identity eos-after=30 \
+    ! appsink drop=true max-buffers=1 sync=false \
+    pb. ! queue ! fakesink sync=false
 
 echo
 echo "==================================================================="
 echo " Interpretation"
 echo "  - Stage 1 fails -> file/path or demux problem."
 echo "  - Stage 2 fails -> mppvideodec / VPU (rockchip-mpp) not working."
+echo "  - Stage 3/4 hang (PREROLLING, no NV12) but 5 works -> parsebin's"
+echo "      unused audio stream deadlocks the shared multiqueue; the fix is"
+echo "      to drain the extra pad to a fakesink (named parsebin)."
 echo "  - Stage 3 OK but 4 fails -> dxconvert (RGA) is the culprit:"
 echo "      set 'rga' off so the demo uses videoconvert (BGR) instead."
 echo "  - All stages OK -> the issue is OpenCV's appsink negotiation;"
