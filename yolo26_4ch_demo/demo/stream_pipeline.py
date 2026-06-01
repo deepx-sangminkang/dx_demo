@@ -136,9 +136,15 @@ class StreamPipeline:
             # flush-seek is unreliable on RK3588 (qtdemux's streaming task dies
             # with 'Internal data stream error (-5)'); SEGMENT looping never lets
             # the stream reach EOS, so that code path is avoided entirely.
+            #
+            # Block until PAUSED preroll completes *and* until the flushing seek
+            # finishes, so the new segment event has propagated to every pad
+            # before data flows. Otherwise a still-prerolling channel emits
+            # 'Got data flow before segment event' warnings at startup.
             self._pipeline.set_state(self._gst.State.PAUSED)
-            self._pipeline.get_state(5 * self._gst.SECOND)
+            self._pipeline.get_state(self._gst.CLOCK_TIME_NONE)
             self._segment_seek(flush=True)
+            self._pipeline.get_state(self._gst.CLOCK_TIME_NONE)
         self._pipeline.set_state(self._gst.State.PLAYING)
         self._thread = threading.Thread(target=self._loop.run, daemon=True)
         self._thread.start()
