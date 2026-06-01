@@ -9,6 +9,12 @@ model: "assets/models/yolo26n-1.dxnn"
 # NOTE: hardware decoding requires an OpenCV build with GStreamer support and the
 #       platform decoder plugins (RK3588 mppvideodec / Intel gstreamer1.0-vaapi).
 #       See README for details.
+# RK3588: HW decode through OpenCV's appsink is NOT usable on this board (the
+#       mppvideodec ! dxconvert path deadlocks in PAUSED and never delivers
+#       buffers to cv2.VideoCapture). 'auto' therefore stays on SW decode here.
+#       To get real HW decode on RK3588 use the native GStreamer backend instead:
+#       set `engine_backend: dxstream` below (decodebin selects mppvideodec and
+#       inference runs inside the pipeline, bypassing OpenCV entirely).
 decode: "auto"
 
 # RGA hardware resize (experimental PoC / RK3588 tuning). DISABLED by default.
@@ -31,11 +37,15 @@ rga_resize: false
 
 # Inference backend selector.
 #   legacy   : Python dx_engine workers (cv2 capture -> preprocess -> infer ->
-#              postprocess in Python). Default; works everywhere.
-#   dxstream : native dx_stream GStreamer pipeline (dxpreprocess -> dxinfer ->
-#              dxpostprocess) with detections read via pydxs. Requires the
-#              dx_stream plugins + pydxs on the board. Frames/detections are fed
-#              to the same Qt display path.
+#              postprocess in Python). Default; works everywhere. On RK3588 video
+#              decode is software-only (OpenCV appsink HW decode is unusable here).
+#   dxstream : native dx_stream GStreamer pipeline (decodebin -> dxpreprocess ->
+#              dxinfer -> dxpostprocess) with detections read via pydxs. OpenCV is
+#              not used at all, so on RK3588 `decodebin` selects the HW decoder
+#              (mppvideodec) -> this is the way to get HW decode on this board.
+#              Requires the dx_stream plugins + pydxs on the board and has NO
+#              software fallback (startup aborts with a clear error if missing).
+#              Verify with: gst-inspect-1.0 dxinfer && python -c "import pydxs"
 engine_backend: "legacy"
 
 # Native dx_stream backend settings (used only when engine_backend: dxstream).
