@@ -360,3 +360,65 @@ def test_segment_seek_non_flush_continues_loop():
             -1,
         )
     ]
+
+
+def test_segment_seek_clears_stale_meta_stash():
+    # A loop seek restarts the PTS timeline, so old-segment metadata keyed by a
+    # PTS that the new segment will reuse must be dropped to avoid mismatches.
+    pipe = _make_pipe()
+    pipe._gst = _SeekGst
+    pipe._pipeline = _FakePipeline()
+    pipe._stash_meta(0, "stale")
+    pipe._stash_meta(1000, "stale2")
+    pipe._segment_seek(flush=False)
+    assert pipe._take_meta(0) is None
+    assert pipe._take_meta(1000) is None
+
+
+def test_detections_reused_for_loop_boundary_miss():
+    # At the loop seam one appsink frame's PTS can desync from the stash; reuse
+    # the last known detections so it does not flash an empty overlay.
+    appsink_buf = _PtsBuffer(0)
+    bridge = _FakeBridge(np.zeros((0, 6), dtype=np.float32))
+    bridge.last_meta_present = False
+    pipe = sp.StreamPipeline(
+        channel_id=0,
+        pipeline_str="x",
+        bridge=bridge,
+        frame_callback=lambda ch, f: None,
+        detection_callback=lambda ch, d: None,
+        gst=_FakeGst,
+        sample_extractor=lambda sample: (None, appsink_buf),
+    )
+    good = np.ones((3, 6), dtype=np.float32)
+    pipe._stash_meta(0, good)
+    # First frame matches the stash and is remembered.
+    np.testing.assert_array_equal(pipe._detections_for_sample(appsink_buf), good)
+    # Next frame misses the stash (boundary); previous detections are reused.
+    np.testing.assert_array_equal(pipe._detections_for_sample(appsink_buf), good)
+
+
+def test_detections_reuse_gives_up_after_streak():
+    appsink_buf = _PtsBuffer(0)
+    empty = np.zeros((0, 6), dtype=np.float32)
+    bridge = _FakeBridge(empty)
+    bridge.last_meta_present = False
+    pipe = sp.StreamPipeline(
+        channel_id=0,
+        pipeline_str="x",
+        bridge=bridge,
+        frame_callback=lambda ch, f: None,
+        detection_callback=lambda ch, d: None,
+        gst=_FakeGst,
+        sample_extractor=lambda sample: (None, appsink_buf),
+    )
+    good = np.ones((3, 6), dtype=np.float32)
+    pipe._stash_meta(0, good)
+    pipe._detections_for_sample(appsink_buf)  # stash hit, remembers good
+    reused = 0
+    for _ in range(pipe._MAX_META_REUSE + 2):
+        out = pipe._detections_for_sample(appsink_buf)
+        if out is good:
+            reused += 1
+    # Reuse is bounded: it must stop after _MAX_META_REUSE misses in a row.
+    assert reused == pipe._MAX_META_REUSE

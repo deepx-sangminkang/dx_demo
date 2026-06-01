@@ -74,6 +74,13 @@ class StreamPipeline:
         self._meta_stash: "OrderedDict[int, object]" = OrderedDict()
         self._meta_stash_lock = threading.Lock()
         self._META_STASH_MAX = 240
+        # Last detections successfully resolved for a frame, reused for up to
+        # _MAX_META_REUSE consecutive stash misses so a single loop-boundary
+        # frame (whose PTS desyncs from the stash right after a seek) does not
+        # flash an empty overlay.
+        self._last_detections = None
+        self._meta_miss_streak = 0
+        self._MAX_META_REUSE = 2
         self._pipeline = None
         self._loop = None
         self._thread: Optional[threading.Thread] = None
@@ -184,8 +191,24 @@ class StreamPipeline:
         if pts is not None:
             stashed = self._take_meta(pts)
             if stashed is not None:
+                self._last_detections = stashed
+                self._meta_miss_streak = 0
                 return stashed
-        return self.bridge.detections_for_buffer(gst_buffer)
+        direct = self.bridge.detections_for_buffer(gst_buffer)
+        if getattr(self.bridge, "last_meta_present", False):
+            self._last_detections = direct
+            self._meta_miss_streak = 0
+            return direct
+        # No metadata for this frame from either source. Right after a loop seek
+        # the PTS timeline restarts and one appsink frame can briefly desync from
+        # the stash; reuse the last known detections for a bounded number of
+        # frames so the overlay stays stable instead of flashing empty.
+        if (self._last_detections is not None
+                and self._meta_miss_streak < self._MAX_META_REUSE):
+            self._meta_miss_streak += 1
+            return self._last_detections
+        self._meta_miss_streak += 1
+        return direct
 
     # ----- PTS-correlated metadata stash (host-testable) -----
 
@@ -222,6 +245,11 @@ class StreamPipeline:
             self._meta_stash.move_to_end(pts)
             while len(self._meta_stash) > self._META_STASH_MAX:
                 self._meta_stash.popitem(last=False)
+
+    def _clear_meta_stash(self) -> None:
+        """Drop all stashed metadata (used when a seek restarts the timeline)."""
+        with self._meta_stash_lock:
+            self._meta_stash.clear()
 
     def _take_meta(self, pts: int):
         """Pop detections for a PTS (and drop any older, now-stale entries)."""
@@ -372,6 +400,9 @@ class StreamPipeline:
         flags = gst.SeekFlags.SEGMENT
         if flush:
             flags |= gst.SeekFlags.FLUSH
+        # The seek restarts the PTS timeline; drop any stashed metadata so a new
+        # frame can never match stale detections left from the previous loop.
+        self._clear_meta_stash()
         self._pipeline.seek(
             1.0,
             gst.Format.TIME,
