@@ -36,23 +36,18 @@ PER_VARIANT_TIMEOUT_S = 8
 
 
 def variants(video: str):
-    """(name, pipeline) candidates, from most to least hardware-offloaded."""
+    """(name, pipeline) candidates.
+
+    Ordered so the variants most likely to *work* and *least* likely to hang
+    (plain ``videoconvert``) run first on a clean VPU; the ``dxconvert`` variants
+    (one of which deadlocks in PAUSED) run last. A killed/hung mpp+RGA session
+    can wedge the VPU so that every later ``mppvideodec`` pipeline then fails to
+    construct, which is exactly why the dangerous ones must come last.
+    """
 
     return [
         (
-            "RGB + dxconvert + audio-drain (current demo HW path)",
-            f"filesrc location={video} ! parsebin name=src "
-            f"src. ! mppvideodec ! dxconvert ! video/x-raw,format=RGB ! {APPSINK} "
-            f"{DRAIN}",
-        ),
-        (
-            "BGR + dxconvert + audio-drain",
-            f"filesrc location={video} ! parsebin name=src "
-            f"src. ! mppvideodec ! dxconvert ! video/x-raw,format=BGR ! {APPSINK} "
-            f"{DRAIN}",
-        ),
-        (
-            "BGR + videoconvert + audio-drain (RGA-backed convert, OpenCV-friendly)",
+            "BGR + videoconvert + audio-drain (best candidate for the demo)",
             f"filesrc location={video} ! parsebin name=src "
             f"src. ! mppvideodec ! videoconvert ! video/x-raw,format=BGR ! {APPSINK} "
             f"{DRAIN}",
@@ -66,6 +61,18 @@ def variants(video: str):
             "BGR + videoconvert via qtdemux+h264parse (explicit demux)",
             f"filesrc location={video} ! qtdemux ! h264parse ! mppvideodec "
             f"! videoconvert ! video/x-raw,format=BGR ! {APPSINK}",
+        ),
+        (
+            "RGB + dxconvert + audio-drain (current demo HW path; known to HANG)",
+            f"filesrc location={video} ! parsebin name=src "
+            f"src. ! mppvideodec ! dxconvert ! video/x-raw,format=RGB ! {APPSINK} "
+            f"{DRAIN}",
+        ),
+        (
+            "BGR + dxconvert + audio-drain",
+            f"filesrc location={video} ! parsebin name=src "
+            f"src. ! mppvideodec ! dxconvert ! video/x-raw,format=BGR ! {APPSINK} "
+            f"{DRAIN}",
         ),
         (
             "RGB + dxconvert, NO audio-drain (original)",
@@ -121,12 +128,68 @@ def _probe_single(index: int, video: str, want_frames: int = 5) -> int:
     os._exit(0)
 
 
+def _run_variant(i: int, video: str, working: list) -> bool:
+    """Run variant ``i`` in an isolated child. Returns True if it hung (which
+    can wedge the VPU for subsequent variants)."""
+
+    name, pipeline = variants(video)[i]
+    print("\n" + "=" * 70)
+    print(f" [{i}] {name}")
+    print(f"   {pipeline}")
+    print("-" * 70)
+    try:
+        proc = subprocess.run(
+            [sys.executable, os.path.realpath(__file__), "--single", str(i), video],
+            timeout=PER_VARIANT_TIMEOUT_S,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.TimeoutExpired as exc:
+        partial = (exc.stdout or "").strip()
+        if partial:
+            print(f"   {partial}")
+        print(
+            f"   RESULT: HANG - no frames within {PER_VARIANT_TIMEOUT_S}s "
+            f"(pipeline stuck in PAUSED) -> SKIP"
+        )
+        print(
+            "   NOTE: a hung mpp/RGA pipeline can wedge the VPU so later "
+            "variants fail to construct."
+        )
+        return True
+
+    out = (proc.stdout or "").strip()
+    if out:
+        for line in out.splitlines():
+            print(f"   {line}")
+    if "THIS PIPELINE WORKS" in out:
+        working.append((i, name))
+    if proc.returncode and proc.returncode < 0:
+        print(
+            f"   RESULT: child crashed (signal {-proc.returncode}) "
+            f"-> pipeline unstable in OpenCV"
+        )
+    err = (proc.stderr or "").strip()
+    if err:
+        tail = [l for l in err.splitlines() if l.strip()][-2:]
+        for line in tail:
+            print(f"   [stderr] {line}")
+    return False
+
+
 def main() -> int:
     argv = sys.argv[1:]
     if argv and argv[0] == "--single":
         index = int(argv[1])
         video = argv[2]
         return _probe_single(index, video)
+
+    # ``--only N`` tests a single variant in isolation on a clean VPU (use this
+    # after a HANG wedged the VPU, ideally right after a reboot).
+    only_index = None
+    if argv and argv[0] == "--only":
+        only_index = int(argv[1])
+        argv = argv[2:]
 
     video = argv[0] if argv else DEFAULT_VIDEO
     if not os.path.isfile(video):
@@ -141,58 +204,31 @@ def main() -> int:
     print(f"(each variant runs in its own process, hard-killed after "
           f"{PER_VARIANT_TIMEOUT_S}s if it hangs)")
 
-    working = []
-    for i, (name, pipeline) in enumerate(variants(video)):
-        print("\n" + "=" * 70)
-        print(f" [{i}] {name}")
-        print(f"   {pipeline}")
-        print("-" * 70)
-        try:
-            proc = subprocess.run(
-                [sys.executable, os.path.realpath(__file__), "--single", str(i), video],
-                timeout=PER_VARIANT_TIMEOUT_S,
-                capture_output=True,
-                text=True,
-            )
-        except subprocess.TimeoutExpired as exc:
-            partial = (exc.stdout or "").strip()
-            if partial:
-                print(f"   {partial}")
-            print(
-                f"   RESULT: HANG - no frames within {PER_VARIANT_TIMEOUT_S}s "
-                f"(pipeline stuck in PAUSED) -> SKIP"
-            )
-            continue
-
-        out = (proc.stdout or "").strip()
-        if out:
-            for line in out.splitlines():
-                print(f"   {line}")
-        if "THIS PIPELINE WORKS" in out:
-            working.append((i, name))
-        if proc.returncode and proc.returncode < 0:
-            print(
-                f"   RESULT: child crashed (signal {-proc.returncode}) "
-                f"-> pipeline unstable in OpenCV"
-            )
-        err = (proc.stderr or "").strip()
-        if err:
-            # Surface only the last couple of native warning lines for context.
-            tail = [l for l in err.splitlines() if l.strip()][-2:]
-            for line in tail:
-                print(f"   [stderr] {line}")
+    working: list = []
+    n = len(variants(video))
+    if only_index is not None:
+        if not 0 <= only_index < n:
+            print(f"[ERROR] --only index out of range (0..{n - 1})", file=sys.stderr)
+            return 1
+        _run_variant(only_index, video, working)
+    else:
+        for i in range(n):
+            _run_variant(i, video, working)
 
     print("\n" + "=" * 70)
     if working:
         print(" WORKING variant(s):")
         for i, name in working:
             print(f"   [{i}] {name}")
-        print(" -> If a BGR/videoconvert variant works but the RGB/dxconvert")
-        print("    ones hang, the demo should use the BGR videoconvert HW path.")
+        print(" -> Use this colour/convert path for the demo's HW decode.")
     else:
-        print(" No variant produced frames in OpenCV: HW decode is not usable")
-        print(" through OpenCV's appsink on this board -> keep SW decode")
-        print(" (set decode: \"sw\" to skip the probe entirely).")
+        print(" No variant produced frames in OpenCV on this run.")
+        print(" If the FIRST dxconvert variant HUNG, it may have wedged the VPU")
+        print(" and poisoned the others -- reboot the board and retest a single")
+        print(" videoconvert variant in isolation, e.g.:")
+        print("     python scripts/diagnose_opencv_gst.py --only 0")
+        print(" If even that fails, HW decode is not usable through OpenCV's")
+        print(" appsink here -> keep SW decode (set decode: \"sw\").")
     print(" Share this whole output.")
     return 0
 
