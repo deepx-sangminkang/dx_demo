@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import sys
 import threading
+import time
 from collections import OrderedDict
 from typing import Callable, Optional, Tuple
 
@@ -82,6 +83,14 @@ class StreamPipeline:
         self._meta_miss_streak = 0
         self._meta_reused = False
         self._MAX_META_REUSE = 2
+        # Stall watchdog: RK3588 loop seeks occasionally wedge a single channel
+        # under VPU contention (one tile freezes while the others keep playing).
+        # If a looping channel produces no frames for _STALL_TIMEOUT seconds, a
+        # flushing seek is issued to kick it back into motion.
+        self._last_sample_mono: Optional[float] = None
+        self._stall_recoveries = 0
+        self._STALL_TIMEOUT = 5.0
+        self._WATCHDOG_INTERVAL = 2
         self._pipeline = None
         self._loop = None
         self._thread: Optional[threading.Thread] = None
@@ -146,6 +155,10 @@ class StreamPipeline:
         # arming a non-flushing seek before preroll completes would hang.
         self._loop = GLib.MainLoop()
         self._pipeline.set_state(self._gst.State.PLAYING)
+        if self._should_loop():
+            # Periodic watchdog: recover a channel whose loop seek wedged the
+            # decoder (frozen tile) by issuing a flushing seek.
+            GLib.timeout_add_seconds(self._WATCHDOG_INTERVAL, self._check_stall)
         self._thread = threading.Thread(target=self._loop.run, daemon=True)
         self._thread.start()
 
@@ -170,6 +183,7 @@ class StreamPipeline:
             if frame is None:
                 return self._gst.FlowReturn.OK
 
+            self._note_sample_time()
             detections = self._detections_for_sample(gst_buffer)
             self._log_detection_diagnostics(detections)
             self.frame_callback(self.channel_id, frame)
@@ -396,6 +410,46 @@ class StreamPipeline:
         """Whether this source should rewind to play again instead of stopping."""
 
         return self.loop and self._pipeline is not None
+
+    # ----- stall watchdog (host-testable) -----
+
+    def _note_sample_time(self) -> None:
+        """Record that a frame was just delivered (for the stall watchdog)."""
+
+        self._last_sample_mono = time.monotonic()
+
+    def _is_stalled(self, now: float) -> bool:
+        """True when a looping channel has produced no frames for too long.
+
+        Returns False before the first frame (startup is allowed to be slow
+        under VPU contention) and for non-looping channels (a finite clip that
+        legitimately ends must not be 'recovered').
+        """
+
+        if not self._should_loop():
+            return False
+        last = self._last_sample_mono
+        if last is None:
+            return False
+        return (now - last) > self._STALL_TIMEOUT
+
+    def _check_stall(self):  # pragma: no cover - board glue
+        try:
+            if self._is_stalled(time.monotonic()):
+                self._stall_recoveries += 1
+                msg = (f"Channel {self.channel_id}: no frames for "
+                       f"{self._STALL_TIMEOUT:.0f}s -> recovering loop")
+                logger.warning(msg)
+                print(f"[WARN] {msg}", file=sys.stderr, flush=True)
+                # A flushing seek resets the wedged decoder; mark the loop armed
+                # so the normal SEGMENT_DONE handler keeps it going afterwards.
+                self._segment_armed = True
+                self._segment_seek(flush=True)
+                self._note_sample_time()  # avoid immediately re-firing
+        except Exception as exc:
+            logger.exception("stall watchdog failed (ch %s): %s",
+                             self.channel_id, exc)
+        return True  # keep the periodic source alive
 
     def _segment_seek(self, flush: bool) -> None:
         """Seek to the start using a SEGMENT seek for gapless looping.

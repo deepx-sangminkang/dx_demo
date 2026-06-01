@@ -445,3 +445,42 @@ def test_detections_reuse_gives_up_after_streak():
             reused += 1
     # Reuse is bounded: it must stop after _MAX_META_REUSE misses in a row.
     assert reused == pipe._MAX_META_REUSE
+
+
+def test_is_stalled_false_when_not_looping():
+    pipe = _make_pipe()
+    pipe.loop = False
+    pipe._pipeline = _FakePipeline()
+    pipe._last_sample_mono = 0.0
+    assert pipe._is_stalled(now=10_000.0) is False
+
+
+def test_is_stalled_false_before_first_frame():
+    pipe = _make_pipe()
+    pipe.loop = True
+    pipe._pipeline = _FakePipeline()
+    pipe._last_sample_mono = None
+    assert pipe._is_stalled(now=10_000.0) is False
+
+
+def test_is_stalled_false_when_recent_frame():
+    pipe = _make_pipe()
+    pipe.loop = True
+    pipe._pipeline = _FakePipeline()
+    pipe._last_sample_mono = 100.0
+    assert pipe._is_stalled(now=100.0 + pipe._STALL_TIMEOUT - 0.1) is False
+
+
+def test_is_stalled_true_when_looping_and_no_frames():
+    pipe = _make_pipe()
+    pipe.loop = True
+    pipe._pipeline = _FakePipeline()
+    pipe._last_sample_mono = 100.0
+    assert pipe._is_stalled(now=100.0 + pipe._STALL_TIMEOUT + 0.1) is True
+
+
+def test_note_sample_time_updates_timestamp():
+    pipe = _make_pipe()
+    assert pipe._last_sample_mono is None
+    pipe._note_sample_time()
+    assert pipe._last_sample_mono is not None
