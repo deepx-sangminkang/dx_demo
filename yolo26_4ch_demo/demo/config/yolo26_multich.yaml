@@ -11,6 +11,16 @@ model: "assets/models/yolo26n-1.dxnn"
 #       See README for details.
 decode: "auto"
 
+# RGA hardware resize (PoC / RK3588 tuning).
+#   When true, a `dxscale` element resizes decoded frames to the model input
+#   size on RGA hardware, so the CPU `cv2.resize` in preprocessing is skipped.
+#   Effective only on the RK3588 RGA (dxconvert) decode path.
+#   Trade-offs: dxscale is a *stretch* resize (no aspect-ratio letterbox), and
+#   the displayed frame is also downscaled to the model size, so detection
+#   accuracy and display sharpness may drop. Use to measure whether the
+#   preprocess bottleneck (input drop) is relieved. Set false to revert.
+rga_resize: true
+
 workers:
   # rockpi profiling showed read~90 but pre=inf=draw~30 (per-stage totals):
   # the inference pipeline is the bottleneck while the NPU itself is starved.

@@ -10,7 +10,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 from collections import defaultdict
 
 import cv2
@@ -199,6 +199,7 @@ class CaptureThread(threading.Thread):
         source_type: str = "video",
         decode_mode: str = "auto",
         display_callback: Optional[Callable[[int, np.ndarray, str], None]] = None,
+        scale_size: Optional[Tuple[int, int]] = None,
     ) -> None:
         super().__init__(daemon=True, name=name or f"CaptureThread-{channel_id}")
         self.channel_id = channel_id
@@ -210,6 +211,9 @@ class CaptureThread(threading.Thread):
         # Optional callback invoked for every captured frame so the display can
         # update at capture FPS, decoupled from the (slower) inference pipeline.
         self.display_callback = display_callback
+        # When set, request RGA HW resize (dxscale) to this (w, h) so the CPU
+        # cv2.resize is skipped; only effective on the RK3588 RGB decode path.
+        self.scale_size = scale_size
         self.used_hw = False
         # Colour order of frames this thread produces ("bgr" or "rgb"); the RGA
         # dxconvert HW path on RK3588 yields RGB so downstream cvtColor is skipped.
@@ -232,6 +236,7 @@ class CaptureThread(threading.Thread):
             platform=env["platform"],
             opencv_gstreamer=env["opencv_gstreamer"],
             rga_convert=env["rga_convert"],
+            scale_size=self.scale_size,
         )
         self.used_hw = used_hw
         self.color_format = color_format

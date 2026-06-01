@@ -230,18 +230,33 @@ def resolve_decode(
 # ===== Pipeline construction =====
 
 
-def _decoder_chain(platform: Platform, rga_convert: bool = False) -> str:
+def _decoder_chain(
+    platform: Platform,
+    rga_convert: bool = False,
+    scale_size: Optional[Tuple[int, int]] = None,
+) -> str:
     """Decoder + color-convert element chain feeding the appsink tail.
 
     When ``rga_convert`` is set on RK3588, the RGA-backed ``dxconvert`` element
     performs the NV12->RGB conversion on hardware (offloading the CPU) and the
     caller emits ``RGB`` caps; otherwise the standard CPU ``videoconvert`` is
     used and ``BGR`` caps are emitted.
+
+    When ``scale_size`` is provided together with ``rga_convert`` on RK3588, the
+    RGA-backed ``dxscale`` element resizes the (NV12) frame to the model input
+    size on hardware *before* the colour conversion, removing the CPU
+    ``cv2.resize`` from the preprocessing hot path. ``dxscale`` is scale-only
+    (no aspect-ratio padding), so callers must treat the result as a stretched
+    resize when remapping detection coordinates.
     """
 
     if platform == Platform.RK3588:
         # mppvideodec outputs NV12.
         if rga_convert:
+            # Optional RGA HW resize (NV12) before the NV12->RGB conversion.
+            if scale_size is not None:
+                w, h = scale_size
+                return f"mppvideodec ! dxscale width={w} height={h} ! dxconvert"
             # dxconvert (librga) does NV12->RGB on the RGA hardware.
             return "mppvideodec ! dxconvert"
         # mpp's RGA-backed videoconvert handles NV12->BGR.
@@ -286,11 +301,18 @@ def build_gst_pipeline(
     source: Union[int, str],
     platform: Platform,
     rga_convert: bool = False,
+    scale_size: Optional[Tuple[int, int]] = None,
 ) -> str:
     """Build a GStreamer launch string for HW-accelerated decoding.
 
     The appsink emits ``RGB`` when the RGA ``dxconvert`` path is selected on
     RK3588 (file/RTSP), otherwise ``BGR``.
+
+    When ``scale_size=(w, h)`` is given on the RK3588 RGA (file/RTSP) path, a
+    ``dxscale`` element resizes frames to ``w x h`` on RGA hardware and the
+    appsink caps are pinned to that resolution, offloading the CPU
+    ``cv2.resize`` from preprocessing. ``scale_size`` is ignored on paths that
+    do not use ``dxconvert`` (camera, non-RK3588, ``rga_convert=False``).
     """
 
     if platform == Platform.UNKNOWN:
@@ -300,17 +322,25 @@ def build_gst_pipeline(
         raise ValueError(f"unsupported source type: {source_type!r}")
 
     color_format = hw_output_color_format(source_type, platform, rga_convert)
+    # dxscale only applies on the RGA dxconvert (RGB) path; pin caps to the
+    # scaled resolution there so negotiation with dxscale is explicit.
+    use_scale = scale_size is not None and color_format == COLOR_RGB
     caps = _RGB_CAPS if color_format == COLOR_RGB else _BGR_CAPS
+    if use_scale:
+        w, h = scale_size
+        caps = f"{caps},width={w},height={h}"
     tail = f"{caps} ! {_APPSINK}"
 
+    chain_scale = scale_size if use_scale else None
+
     if source_type == "video":
-        decoder = _decoder_chain(platform, rga_convert)
+        decoder = _decoder_chain(platform, rga_convert, chain_scale)
         return (
             f"filesrc location={source} ! parsebin ! {decoder} ! {tail}"
         )
 
     if source_type == "rtsp":
-        decoder = _decoder_chain(platform, rga_convert)
+        decoder = _decoder_chain(platform, rga_convert, chain_scale)
         # depay/parse are codec specific; default to H.264. H.265 streams can be
         # supported later by branching on caps.
         return (
@@ -334,6 +364,7 @@ def open_capture(
     platform: Platform,
     opencv_gstreamer: bool,
     rga_convert: bool = False,
+    scale_size: Optional[Tuple[int, int]] = None,
     video_capture_factory: Optional[Callable[..., "cv2.VideoCapture"]] = None,
 ) -> Tuple["cv2.VideoCapture", bool, str, str]:
     """Open a ``cv2.VideoCapture``, preferring HW decode with SW fallback.
@@ -342,6 +373,9 @@ def open_capture(
     ``"rgb"`` only when the RGA ``dxconvert`` path is actually used, otherwise
     ``"bgr"``. ``capture`` may be unopened if even the software fallback fails;
     the caller is expected to check ``isOpened()``.
+
+    ``scale_size`` (when set) requests RGA HW resize via ``dxscale`` on the
+    RK3588 RGB path; it is ignored on every other decode path.
     """
 
     if video_capture_factory is None:
@@ -351,7 +385,9 @@ def open_capture(
 
     if decision.use_hw:
         try:
-            pipeline = build_gst_pipeline(source_type, source, platform, rga_convert)
+            pipeline = build_gst_pipeline(
+                source_type, source, platform, rga_convert, scale_size
+            )
             cap = video_capture_factory(pipeline, cv2.CAP_GSTREAMER)
             if cap is not None and cap.isOpened():
                 color_format = hw_output_color_format(

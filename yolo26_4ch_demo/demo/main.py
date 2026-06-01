@@ -627,6 +627,17 @@ class MainWindow(QtWidgets.QMainWindow):
         # Global decode mode (auto/hw/sw); per-channel value can override it.
         global_decode = str(config.get("decode", "auto"))
 
+        # Optional RGA HW resize: when enabled, dxscale resizes frames to the
+        # model input size on RGA hardware so the CPU cv2.resize is skipped.
+        # Note: dxscale is a stretch resize (no aspect-ratio letterbox) and the
+        # displayed frame is also downscaled to the model size. PoC/tuning flag.
+        rga_resize = bool(config.get("rga_resize", False))
+        scale_size = (
+            (int(self.engine.input_width), int(self.engine.input_height))
+            if rga_resize
+            else None
+        )
+
         # Create per-channel capture threads
         self.capture_threads: List[CaptureThread] = []
         for idx, ch_cfg in enumerate(config.get("channels", [])):
@@ -645,6 +656,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 source_type=source_type,
                 decode_mode=decode_mode,
                 display_callback=self._on_display_frame_from_capture,
+                scale_size=scale_size,
             )
             self.capture_threads.append(t)
 

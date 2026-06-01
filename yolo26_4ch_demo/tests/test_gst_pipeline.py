@@ -241,6 +241,78 @@ def test_hw_output_color_format():
     )
 
 
+# ===== build_gst_pipeline: RGA dxscale (HW resize offload) path =====
+
+
+def test_build_video_pipeline_rga_scale_inserts_dxscale():
+    pipeline = gp.build_gst_pipeline(
+        source_type="video",
+        source="/data/a.mp4",
+        platform=gp.Platform.RK3588,
+        rga_convert=True,
+        scale_size=(640, 640),
+    )
+    assert "mppvideodec" in pipeline
+    assert "dxscale" in pipeline
+    assert "width=640" in pipeline
+    assert "height=640" in pipeline
+    assert "dxconvert" in pipeline
+    # appsink caps pin the model input resolution so negotiation is explicit.
+    assert "format=RGB,width=640,height=640" in pipeline
+    # dxscale must run before the colour conversion (NV12 scale, then RGB).
+    assert pipeline.index("dxscale") < pipeline.index("dxconvert")
+
+
+def test_build_rtsp_pipeline_rga_scale_inserts_dxscale():
+    pipeline = gp.build_gst_pipeline(
+        source_type="rtsp",
+        source="rtsp://10.0.0.1/s",
+        platform=gp.Platform.RK3588,
+        rga_convert=True,
+        scale_size=(640, 480),
+    )
+    assert "dxscale" in pipeline
+    assert "width=640" in pipeline
+    assert "height=480" in pipeline
+    assert "format=RGB,width=640,height=480" in pipeline
+
+
+def test_build_video_pipeline_no_scale_when_size_none():
+    # Default (scale_size=None) keeps the original behaviour: no dxscale.
+    pipeline = gp.build_gst_pipeline(
+        source_type="video",
+        source="/data/a.mp4",
+        platform=gp.Platform.RK3588,
+        rga_convert=True,
+    )
+    assert "dxscale" not in pipeline
+    assert "width=" not in pipeline
+
+
+def test_build_video_pipeline_scale_ignored_without_rga():
+    # dxscale relies on the RGB/dxconvert path; without rga_convert it is skipped.
+    pipeline = gp.build_gst_pipeline(
+        source_type="video",
+        source="/data/a.mp4",
+        platform=gp.Platform.RK3588,
+        rga_convert=False,
+        scale_size=(640, 640),
+    )
+    assert "dxscale" not in pipeline
+
+
+def test_build_camera_pipeline_scale_ignored():
+    # Camera keeps the CPU videoconvert chain; no dxscale even with scale_size.
+    pipeline = gp.build_gst_pipeline(
+        source_type="camera",
+        source=0,
+        platform=gp.Platform.RK3588,
+        rga_convert=True,
+        scale_size=(640, 640),
+    )
+    assert "dxscale" not in pipeline
+
+
 # ===== should_use_hw_decode (fallback decision) =====
 
 
