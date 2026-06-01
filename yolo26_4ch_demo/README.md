@@ -40,6 +40,30 @@ To install manually without running the demo:
 ./install.sh
 ```
 
+### Installing the `dxstream` backend (dx_stream)
+
+The default install covers the **legacy** backend only. The native
+[`dxstream`](#inference-backend-engine_backend) backend additionally needs the
+dx_stream GStreamer plugins and the `pydxs` Python bindings. Install them with:
+
+```bash
+./install.sh --with-dxstream          # full demo + dx_stream
+# or, standalone (idempotent):
+./scripts/install_dxstream.sh
+```
+
+`install_dxstream.sh`:
+- Skips the build if dx_stream + `pydxs` are already installed (`--force` to rebuild).
+- Locates the dx_stream source via `$DX_STREAM_SRC`, common sibling paths, or
+  clones it from `$DX_STREAM_REPO` (default `git@github.com:DEEPX-AI/dx_stream`).
+- Runs dx_stream's `install.sh` (system deps) and `build.sh` (plugin + `pydxs`).
+  Pass `--dxstream-skip-deps` / `--skip-deps` to skip the system-dependency step.
+- Writes `scripts/.dxstream_env.sh`, which `run_demo.sh` sources automatically so
+  the plugin is discoverable without editing `~/.bashrc`.
+
+> dx_stream links against **DX-RT** (`dx_engine`), so the same prerequisite above
+> must be satisfied before building it.
+
 ## Configuration
 
 Edit [`demo/config/yolo26_multich.yaml`](demo/config/yolo26_multich.yaml) to match your environment.
@@ -104,10 +128,11 @@ channels:
 engine_backend: "legacy"
 ```
 
-> **Note:** Neither `requirements.txt` nor `install.sh` installs dx_stream. The
+> **Note:** The default `install.sh` does **not** build dx_stream. The
 > `dxstream` backend (and the optional RGA acceleration path of the `legacy`
-> backend) assume dx_stream is already installed on the machine, with its
-> GStreamer plugins reachable via `GST_PLUGIN_PATH`.
+> backend) assume dx_stream is installed, with its GStreamer plugins reachable
+> via `GST_PLUGIN_PATH`. Install it with `./install.sh --with-dxstream` or
+> `./scripts/install_dxstream.sh` (see [Installation](#installing-the-dxstream-backend-dx_stream)).
 
 ## Hardware-Accelerated Decoding (GStreamer)
 
