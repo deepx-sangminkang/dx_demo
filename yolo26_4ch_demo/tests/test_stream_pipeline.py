@@ -308,6 +308,23 @@ def test_should_loop_false_without_pipeline():
     assert pipe._should_loop() is False
 
 
+def test_should_arm_segment_loop_only_once():
+    pipe = _make_pipe()
+    pipe.loop = True
+    pipe._pipeline = _FakePipeline()
+    assert pipe._segment_armed is False
+    assert pipe._should_arm_segment_loop() is True
+    pipe._segment_armed = True
+    assert pipe._should_arm_segment_loop() is False
+
+
+def test_should_arm_segment_loop_false_when_not_looping():
+    pipe = _make_pipe()
+    pipe.loop = False
+    pipe._pipeline = _FakePipeline()
+    assert pipe._should_arm_segment_loop() is False
+
+
 def test_segment_seek_flush_arms_segment_loop():
     pipe = _make_pipe()
     pipe._gst = _SeekGst

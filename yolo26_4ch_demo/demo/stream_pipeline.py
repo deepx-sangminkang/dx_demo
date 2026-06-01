@@ -64,6 +64,7 @@ class StreamPipeline:
         self.error_callback = error_callback
         self.meta_src_name = meta_src_name
         self.loop = loop
+        self._segment_armed = False
 
         self._gst = gst
         self._extract = sample_extractor
@@ -127,32 +128,15 @@ class StreamPipeline:
         bus.connect("message::warning", self._on_bus_warning)
         bus.connect("message::eos", self._on_bus_eos)
         bus.connect("message::segment-done", self._on_bus_segment_done)
+        bus.connect("message::async-done", self._on_bus_async_done)
 
+        # Go straight to PLAYING without a synchronous PAUSED-preroll wait. The
+        # four channels share the RK3588 decoder, so blocking on preroll here
+        # deadlocks the sequential startup (a later channel never prerolls while
+        # earlier ones already hold the VPU). SEGMENT looping is armed later from
+        # the async-done handler, once this pipeline has actually prerolled --
+        # arming a non-flushing seek before preroll completes would hang.
         self._loop = GLib.MainLoop()
-        if self._should_loop():
-            # Use SEGMENT looping for files: preroll in PAUSED, then arm the
-            # SEGMENT loop so the source emits SEGMENT_DONE (instead of EOS) at
-            # the end of the clip. Looping on EOS via a flush-seek is unreliable
-            # on RK3588 (qtdemux's streaming task dies with 'Internal data stream
-            # error (-5)'); SEGMENT looping never lets the stream reach EOS, so
-            # that code path is avoided entirely.
-            #
-            # The arming seek is *non-flushing*: dxinfer pushes buffers from its
-            # own async inference thread, so a flushing seek lets in-flight
-            # buffers race ahead of the new segment event ('Got data flow before
-            # segment event' warnings from dxinfer:src downstream). A non-flush
-            # seek keeps the original start-of-stream segment valid, so no such
-            # race occurs. If the source ignores the segment request and still
-            # reaches EOS, _on_bus_eos re-arms with a flushing seek as a fallback.
-            # Preroll in PAUSED, but only wait a bounded time: the four channels
-            # share the RK3588 video decoder, so a later channel's preroll may
-            # not finish while earlier channels already hold the VPU in PLAYING.
-            # An unbounded get_state() there deadlocks the (sequential) startup
-            # and the UI never appears. A non-flushing seek still arms cleanly
-            # even if preroll hasn't fully completed.
-            self._pipeline.set_state(self._gst.State.PAUSED)
-            self._pipeline.get_state(5 * self._gst.SECOND)
-            self._segment_seek(flush=False)
         self._pipeline.set_state(self._gst.State.PLAYING)
         self._thread = threading.Thread(target=self._loop.run, daemon=True)
         self._thread.start()
@@ -343,6 +327,25 @@ class StreamPipeline:
         except Exception as exc:
             logger.exception("segment loop seek failed (ch %s): %s",
                              self.channel_id, exc)
+
+    def _on_bus_async_done(self, _bus, _message):  # pragma: no cover - board glue
+        # The pipeline has prerolled (reached PLAYING). Arm the SEGMENT loop now,
+        # exactly once, with a non-flushing seek: doing it post-preroll avoids
+        # both the startup deadlock (no synchronous PAUSED wait) and the
+        # 'Got data flow before segment event' warnings (a non-flush seek on an
+        # already-running pipeline keeps the live segment valid).
+        if self._should_arm_segment_loop():
+            self._segment_armed = True
+            try:
+                self._segment_seek(flush=False)
+            except Exception as exc:
+                logger.exception("segment loop arm failed (ch %s): %s",
+                                 self.channel_id, exc)
+
+    def _should_arm_segment_loop(self) -> bool:
+        """Whether the SEGMENT loop still needs arming on this pipeline."""
+
+        return self._should_loop() and not self._segment_armed
 
     def _deferred_segment_restart(self):  # pragma: no cover - board glue
         try:
