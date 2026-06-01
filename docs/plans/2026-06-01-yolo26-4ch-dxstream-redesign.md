@@ -856,3 +856,34 @@ git add -A && git commit -m "docs: dxstream backend usage + RK3588 perf results"
 3. EOF 루프/`max_fps` 레이트 리밋의 파이프라인 재현 방식 — Task 14.
 4. `yolo26n.dxnn`(dx_stream 샘플) vs 데모 보유 모델 호환/라벨셋 — Task 10.
 5. per-stream vs selector(shared infer) 성능 비교 — Task 13 결과로 결정.
+
+---
+
+## 호스트 구현 진행 현황 (2026-06-01 업데이트)
+
+Phase 1~5의 **호스트 TDD 가능 부분이 모두 구현·커밋·push 완료**되었다(브랜치 dev).
+실제 NPU/RGA/pydxs 구동(Phase 6)은 보드(rockpi)에서 사용자가 수행한다.
+
+### 구현된 모듈 (모두 신규, legacy 무수정 병행)
+- `demo/native_pipeline.py` — `build_infer_pipeline` (decodebin→dxpreprocess→dxinfer→dxpostprocess→appsink, rtsp/camera/display_size 변형). element property는 `run_yolo26n.sh`/DxPreprocess 문서와 대조 확정(`resize-width/height`, `keep-ratio`, `pad-value`, `model-path`, `library-file-path`, `function-name`).
+- `demo/meta_adapter.py` — `frame_meta_to_detections`((N,6) float32), `filter_by_classes`. pydxs `obj.box/confidence/label` 사용(README 확인).
+- `demo/pydxs_bridge.py` — `PydxsBridge`(import 가드 + `hash(buffer)`→`dx_get_frame_meta`, 호스트/에러 시 빈 배열 graceful).
+- `demo/native_config.py` — `get_engine_backend`(legacy|dxstream), `build_native_cfgs`.
+- `demo/native_signal.py` — `build_frame_payload`/`build_detection_payload`(기존 `frame_ready`/`detections_ready` 계약 유지).
+- `demo/stream_pipeline.py` — `StreamPipeline`(gi/extractor 주입식, `_on_new_sample` 디스패치 host-testable, GLib 루프 board-only).
+- `demo/_gst_sample.py` — `extract_frame_and_buffer`(보드 전용, RGB ndarray + buffer).
+- `demo/engine.py` — `COCO80_CLASSES` 모듈 상수 추출 + `NativeDisplayMeta`(NPU 미로드 오버레이 메타).
+- `demo/main.py` — `_init_engine_and_workers`에 backend 분기, `_init_dxstream_backend`, `_on_native_frame`/`_on_native_detections`, 셧다운에 pipeline stop.
+- `demo/config/yolo26_multich.yaml` — `engine_backend`(기본 legacy) + `dxstream` 블록.
+
+### 확정된 미해결 항목
+- (1) pydxs 메타 접근 키: **`hash(gst_buffer)`로 확정**(usermeta_app.py read_metadata_probe + pydxs README 일치). appsink `pull-sample`의 buffer에도 동일 적용.
+- 나머지 (2)(3)(4)(5)는 보드 구동(Phase 6)에서 확정.
+
+### 테스트
+- `python -m pytest tests/ -q` → **77 통과**(legacy 회귀 0, 신규 native_pipeline/meta_adapter/pydxs_bridge/native_config/native_signal/stream_pipeline/gst_sample/main_native_wiring 27개 추가).
+
+### 보드 사용법(요지)
+1. `yolo26_multich.yaml`에서 `engine_backend: dxstream`, `model`을 보드용 `.dxnn`로, `dxstream.postprocess_library`를 실제 경로로 설정.
+2. dx_stream 플러그인 + `pydxs`(venv-dx_stream) 환경에서 데모 실행.
+3. legacy로 즉시 롤백: `engine_backend: legacy`.
