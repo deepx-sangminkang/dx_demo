@@ -15,8 +15,10 @@ without any real hardware decoder present.
 
 from __future__ import annotations
 
+import contextlib
 import enum
 import os
+import sys
 import threading
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, List, Optional, Set, Tuple, Union
@@ -371,6 +373,57 @@ def build_gst_pipeline(
 
 # ===== Capture opening with graceful fallback =====
 
+
+@contextlib.contextmanager
+def _suppressed_native_stderr():
+    """Temporarily silence OS-level stderr (fd 2).
+
+    OpenCV's ``cap_gstreamer`` and GLib write their warnings / ``CRITICAL``
+    assertions straight to the C-level stderr, so Python logging cannot mask
+    them. We only wrap the known-noisy, known-harmless HW decode probe with
+    this, and restore stderr immediately afterwards. Best-effort: if the fds
+    cannot be redirected (e.g. stderr already closed) we run without
+    suppression rather than fail.
+    """
+
+    try:
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+    saved_fd = None
+    devnull_fd = None
+    try:
+        saved_fd = os.dup(2)
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull_fd, 2)
+    except Exception:
+        for fd in (devnull_fd, saved_fd):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+        yield
+        return
+
+    try:
+        yield
+    finally:
+        try:
+            sys.stderr.flush()
+        except Exception:
+            pass
+        try:
+            os.dup2(saved_fd, 2)
+        finally:
+            for fd in (saved_fd, devnull_fd):
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+
+
 # Bound HW preroll: OpenCV's ``grab()`` has no timeout and blocks forever when a
 # HW GStreamer pipeline never prerolls (e.g. a multiqueue/decoder deadlock). We
 # cannot rely on ``CAP_PROP_READ_TIMEOUT_MSEC`` because some OpenCV builds (e.g.
@@ -456,9 +509,17 @@ def open_capture(
             pipeline = build_gst_pipeline(
                 source_type, source, platform, rga_convert, scale_size
             )
-            cap = video_capture_factory(pipeline, cv2.CAP_GSTREAMER)
-            if cap is not None and cap.isOpened():
-                if _hw_capture_yields_frame(cap):
+            # A HW pipeline that never negotiates caps makes OpenCV's
+            # cap_gstreamer and GLib spray "cannot query width/height" warnings
+            # and ``GStreamer-CRITICAL`` assertions onto the native stderr while
+            # we open + probe it. Those are harmless (we detect the dead pipeline
+            # and fall back), so silence the OS-level stderr for just this probe.
+            with _suppressed_native_stderr():
+                cap = video_capture_factory(pipeline, cv2.CAP_GSTREAMER)
+                cap_ready = cap is not None and cap.isOpened()
+                yields_frame = cap_ready and _hw_capture_yields_frame(cap)
+            if cap_ready:
+                if yields_frame:
                     color_format = hw_output_color_format(
                         source_type, platform, rga_convert
                     )

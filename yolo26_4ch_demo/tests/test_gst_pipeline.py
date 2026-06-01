@@ -7,6 +7,8 @@ decisions) so they run without any real hardware decoder.
 
 from __future__ import annotations
 
+import os
+import sys
 import time
 
 import pytest
@@ -510,6 +512,20 @@ def test_open_capture_hw_opens_but_no_frames_falls_back_to_sw(monkeypatch):
     assert caps[0][0].released is True
     # SW fallback opens the raw source.
     assert caps[1][1] == "/data/a.mp4"
+
+
+def test_suppressed_native_stderr_restores_fd(capfd):
+    """The probe stderr-suppression must restore fd 2 afterwards so later
+    output is not lost."""
+
+    with gp._suppressed_native_stderr():
+        os.write(2, b"swallowed-by-suppression\n")
+    # After the context exits, stderr works again.
+    print("visible-after", file=sys.stderr)
+    sys.stderr.flush()
+    err = capfd.readouterr().err
+    assert "swallowed-by-suppression" not in err
+    assert "visible-after" in err
 
 
 def test_open_capture_hw_blocking_grab_times_out_to_sw(monkeypatch):
