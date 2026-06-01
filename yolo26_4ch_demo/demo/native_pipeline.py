@@ -104,6 +104,19 @@ def _source_chain(source_type: str, source: Union[int, str]) -> str:
     raise ValueError(f"unsupported source type: {source_type!r}")
 
 
+def meta_source_name(appsink_name: str) -> str:
+    """Name of the element whose src pad still carries the DXFrameMeta.
+
+    The detection metadata that ``dxpostprocess`` (or ``dxscale``) attaches lives
+    on the *decoder-native* buffer; the downstream ``videoconvert`` (NV12->RGB)
+    allocates a new buffer that does not carry the custom meta, so the meta must
+    be read on this element's src pad (before ``videoconvert``) and correlated to
+    the appsink frame by buffer PTS.
+    """
+
+    return f"dxmeta_{appsink_name}"
+
+
 def build_infer_pipeline(
     source_type: str,
     source: Union[int, str],
@@ -126,10 +139,15 @@ def build_infer_pipeline(
     inf = _infer_element(infer_cfg, preprocess_cfg.preprocess_id)
     post = _postprocess_element(postprocess_cfg)
 
-    tail = ""
+    # Name the last metadata-bearing element before videoconvert so its src pad
+    # can be probed for detections (which do not survive the NV12->RGB convert).
+    meta_name = meta_source_name(appsink_name)
     if display_size is not None:
         w, h = display_size
-        tail = f" ! {q} ! dxscale width={w} height={h}"
+        tail = f" ! {q} ! dxscale width={w} height={h} name={meta_name}"
+    else:
+        post = f"{post} name={meta_name}"
+        tail = ""
 
     # dxpostprocess only attaches metadata; the buffer pixels are still the
     # decoder's native format (NV12/I420). Convert to RGB with explicit caps so

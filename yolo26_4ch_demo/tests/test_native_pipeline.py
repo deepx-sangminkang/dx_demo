@@ -65,6 +65,12 @@ def test_build_infer_pipeline_video_contains_core_elements():
     assert "function-name=PostProcess" in p
     assert "appsink name=sink0" in p
     assert "drop=true" in p and "max-buffers=1" in p and "sync=false" in p
+    # The metadata-bearing element (here dxpostprocess, since there is no
+    # display scale) must be named so its src pad can be probed before the
+    # videoconvert that drops the custom DXFrameMeta.
+    meta_name = npl.meta_source_name("sink0")
+    assert f"dxpostprocess" in p and f"name={meta_name}" in p
+    assert p.index(f"name={meta_name}") < p.index("videoconvert")
     # The display branch must convert to RGB with explicit caps so the appsink
     # delivers deterministic 3-channel frames (dxpostprocess does not convert
     # pixels, so the raw frame would otherwise be the decoder's NV12/I420).
@@ -91,6 +97,10 @@ def test_build_infer_pipeline_rtsp_and_display_scale():
     )
     assert "rtspsrc location=rtsp://10.0.0.1/s" in p
     assert "dxscale width=320 height=240" in p
+    # With a display scale, dxscale is the last meta-bearing element before
+    # videoconvert, so it (not dxpostprocess) carries the probe name.
+    meta_name = npl.meta_source_name("s1")
+    assert f"dxscale width=320 height=240 name={meta_name}" in p
     assert (
         p.index("dxpostprocess")
         < p.index("dxscale")

@@ -160,3 +160,99 @@ def test_on_new_sample_logs_detection_diagnostics(capsys):
     assert "detections=2" in err
     assert "frame_meta_present=True" in err
 
+
+class _PtsBuffer:
+    """Minimal stand-in for a GstBuffer exposing a PTS."""
+
+    def __init__(self, pts):
+        self.pts = pts
+
+
+def test_buffer_pts_returns_none_for_missing_or_invalid():
+    pipe = _make_pipe()
+    assert pipe._buffer_pts(object()) is None
+    # CLOCK_TIME_NONE-style sentinel is treated as "no usable PTS".
+    pipe._gst.CLOCK_TIME_NONE = 18446744073709551615
+    assert pipe._buffer_pts(_PtsBuffer(18446744073709551615)) is None
+    assert pipe._buffer_pts(_PtsBuffer(1000)) == 1000
+
+
+def test_stash_and_take_meta_roundtrip():
+    pipe = _make_pipe()
+    det = np.ones((3, 6), dtype=np.float32)
+    pipe._stash_meta(500, det)
+    taken = pipe._take_meta(500)
+    np.testing.assert_array_equal(taken, det)
+    # Once taken it is gone.
+    assert pipe._take_meta(500) is None
+
+
+def test_take_meta_drops_older_stale_entries():
+    pipe = _make_pipe()
+    pipe._stash_meta(10, "a")
+    pipe._stash_meta(20, "b")
+    pipe._stash_meta(30, "c")
+    # Consuming PTS 20 must also evict the older PTS 10 (already-dropped frame).
+    assert pipe._take_meta(20) == "b"
+    assert pipe._take_meta(10) is None
+    assert pipe._take_meta(30) == "c"
+
+
+def test_stash_is_bounded():
+    pipe = _make_pipe()
+    pipe._META_STASH_MAX = 5
+    for i in range(20):
+        pipe._stash_meta(i, i)
+    assert len(pipe._meta_stash) == 5
+    # Oldest entries evicted; newest retained.
+    assert pipe._take_meta(0) is None
+    assert pipe._take_meta(19) == 19
+
+
+def test_on_new_sample_prefers_pts_stash_over_appsink_buffer():
+    frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    appsink_buf = _PtsBuffer(700)
+    bridge = _FakeBridge(np.zeros((0, 6), dtype=np.float32))
+    stashed = np.ones((4, 6), dtype=np.float32)
+
+    dets = []
+    pipe = sp.StreamPipeline(
+        channel_id=0,
+        pipeline_str="x",
+        bridge=bridge,
+        frame_callback=lambda ch, f: None,
+        detection_callback=lambda ch, d: dets.append(d),
+        gst=_FakeGst,
+        sample_extractor=lambda sample: (frame, appsink_buf),
+    )
+    # Meta captured on the pre-videoconvert pad, keyed by the same PTS.
+    pipe._stash_meta(700, stashed)
+
+    pipe._on_new_sample(appsink_with_sample=object())
+
+    np.testing.assert_array_equal(dets[0], stashed)
+    # The appsink buffer must NOT have been consulted when a stash hit exists.
+    assert bridge.seen_buffer is None
+
+
+def test_on_new_sample_falls_back_to_bridge_without_stash():
+    frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    appsink_buf = _PtsBuffer(700)
+    det = np.ones((1, 6), dtype=np.float32)
+    bridge = _FakeBridge(det)
+
+    dets = []
+    pipe = sp.StreamPipeline(
+        channel_id=0,
+        pipeline_str="x",
+        bridge=bridge,
+        frame_callback=lambda ch, f: None,
+        detection_callback=lambda ch, d: dets.append(d),
+        gst=_FakeGst,
+        sample_extractor=lambda sample: (frame, appsink_buf),
+    )
+
+    pipe._on_new_sample(appsink_with_sample=object())
+
+    np.testing.assert_array_equal(dets[0], det)
+    assert bridge.seen_buffer is appsink_buf

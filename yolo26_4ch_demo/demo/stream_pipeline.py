@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import sys
 import threading
+from collections import OrderedDict
 from typing import Callable, Optional, Tuple
 
 import numpy as np
@@ -51,6 +52,7 @@ class StreamPipeline:
         gst=None,
         sample_extractor: Optional[SampleExtractor] = None,
         error_callback: Optional[ErrorCallback] = None,
+        meta_src_name: Optional[str] = None,
     ):
         self.channel_id = channel_id
         self.pipeline_str = pipeline_str
@@ -59,10 +61,16 @@ class StreamPipeline:
         self.detection_callback = detection_callback
         self.appsink_name = appsink_name
         self.error_callback = error_callback
+        self.meta_src_name = meta_src_name
 
         self._gst = gst
         self._extract = sample_extractor
         self._sample_count = 0
+        # Detections captured on the meta-source pad (before videoconvert),
+        # keyed by buffer PTS, consumed by the appsink frame with the same PTS.
+        self._meta_stash: "OrderedDict[int, object]" = OrderedDict()
+        self._meta_stash_lock = threading.Lock()
+        self._META_STASH_MAX = 240
         self._pipeline = None
         self._loop = None
         self._thread: Optional[threading.Thread] = None
@@ -82,6 +90,31 @@ class StreamPipeline:
         self._pipeline = self._gst.parse_launch(self.pipeline_str)
         appsink = self._pipeline.get_by_name(self.appsink_name)
         appsink.connect("new-sample", self._on_new_sample_signal)
+
+        # Capture detection metadata on the meta-source src pad (before the
+        # NV12->RGB videoconvert, which drops the custom DXFrameMeta). The probe
+        # stashes detections by buffer PTS for the appsink frame to pick up.
+        if self.meta_src_name:
+            meta_el = self._pipeline.get_by_name(self.meta_src_name)
+            if meta_el is not None:
+                src_pad = meta_el.get_static_pad("src")
+                if src_pad is not None:
+                    src_pad.add_probe(
+                        self._gst.PadProbeType.BUFFER, self._on_meta_probe
+                    )
+                else:
+                    print(
+                        f"[WARN] Channel {self.channel_id}: meta element "
+                        f"'{self.meta_src_name}' has no src pad; detections "
+                        f"disabled",
+                        file=sys.stderr, flush=True,
+                    )
+            else:
+                print(
+                    f"[WARN] Channel {self.channel_id}: meta element "
+                    f"'{self.meta_src_name}' not found; detections disabled",
+                    file=sys.stderr, flush=True,
+                )
 
         # Watch the pipeline bus so element errors/warnings (e.g. dxinfer failing
         # to load the model, dxpostprocess missing its library, caps negotiation
@@ -118,7 +151,7 @@ class StreamPipeline:
             if frame is None:
                 return self._gst.FlowReturn.OK
 
-            detections = self.bridge.detections_for_buffer(gst_buffer)
+            detections = self._detections_for_sample(gst_buffer)
             self._log_detection_diagnostics(detections)
             self.frame_callback(self.channel_id, frame)
             self.detection_callback(self.channel_id, detections)
@@ -126,6 +159,71 @@ class StreamPipeline:
             logger.exception("stream sample dispatch failed (ch %s): %s",
                              self.channel_id, exc)
         return self._gst.FlowReturn.OK
+
+    def _detections_for_sample(self, gst_buffer):
+        """Resolve detections for an appsink buffer.
+
+        Prefer detections captured on the meta-source pad (matched by PTS, since
+        the custom DXFrameMeta does not survive the NV12->RGB videoconvert that
+        produces the appsink buffer). Fall back to reading meta straight off the
+        appsink buffer when no probe is active (e.g. host tests / passthrough).
+        """
+
+        pts = self._buffer_pts(gst_buffer)
+        if pts is not None:
+            stashed = self._take_meta(pts)
+            if stashed is not None:
+                return stashed
+        return self.bridge.detections_for_buffer(gst_buffer)
+
+    # ----- PTS-correlated metadata stash (host-testable) -----
+
+    def _buffer_pts(self, gst_buffer) -> Optional[int]:
+        """Return a usable PTS for a buffer, or None when invalid/unavailable."""
+
+        pts = getattr(gst_buffer, "pts", None)
+        if pts is None:
+            return None
+        gst = self._gst
+        invalid = getattr(gst, "CLOCK_TIME_NONE", None) if gst is not None else None
+        if invalid is not None and pts == invalid:
+            return None
+        return pts
+
+    def _on_meta_probe(self, pad, info, *_):  # pragma: no cover - board glue
+        """Pad probe: read DXFrameMeta before videoconvert, stash by PTS."""
+        try:
+            buf = info.get_buffer()
+            if buf is None:
+                return self._gst.PadProbeReturn.OK
+            detections = self.bridge.detections_for_buffer(buf)
+            pts = self._buffer_pts(buf)
+            if pts is not None:
+                self._stash_meta(pts, detections)
+        except Exception as exc:
+            logger.exception("meta probe failed (ch %s): %s", self.channel_id, exc)
+        return self._gst.PadProbeReturn.OK
+
+    def _stash_meta(self, pts: int, detections) -> None:
+        """Store detections for a PTS, bounding total memory used."""
+        with self._meta_stash_lock:
+            self._meta_stash[pts] = detections
+            self._meta_stash.move_to_end(pts)
+            while len(self._meta_stash) > self._META_STASH_MAX:
+                self._meta_stash.popitem(last=False)
+
+    def _take_meta(self, pts: int):
+        """Pop detections for a PTS (and drop any older, now-stale entries)."""
+        with self._meta_stash_lock:
+            if pts not in self._meta_stash:
+                return None
+            # Buffers are produced in order, so anything inserted before this PTS
+            # belongs to frames the appsink already dropped/consumed.
+            while True:
+                oldest = next(iter(self._meta_stash))
+                value = self._meta_stash.pop(oldest)
+                if oldest == pts:
+                    return value
 
     # ----- detection diagnostics (host-testable) -----
 
