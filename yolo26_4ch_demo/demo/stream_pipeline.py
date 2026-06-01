@@ -144,8 +144,14 @@ class StreamPipeline:
             # seek keeps the original start-of-stream segment valid, so no such
             # race occurs. If the source ignores the segment request and still
             # reaches EOS, _on_bus_eos re-arms with a flushing seek as a fallback.
+            # Preroll in PAUSED, but only wait a bounded time: the four channels
+            # share the RK3588 video decoder, so a later channel's preroll may
+            # not finish while earlier channels already hold the VPU in PLAYING.
+            # An unbounded get_state() there deadlocks the (sequential) startup
+            # and the UI never appears. A non-flushing seek still arms cleanly
+            # even if preroll hasn't fully completed.
             self._pipeline.set_state(self._gst.State.PAUSED)
-            self._pipeline.get_state(self._gst.CLOCK_TIME_NONE)
+            self._pipeline.get_state(5 * self._gst.SECOND)
             self._segment_seek(flush=False)
         self._pipeline.set_state(self._gst.State.PLAYING)
         self._thread = threading.Thread(target=self._loop.run, daemon=True)
