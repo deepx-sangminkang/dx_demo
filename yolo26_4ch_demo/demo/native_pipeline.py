@@ -46,6 +46,25 @@ class PostprocessCfg:
     function_name: str = "PostProcess"
 
 
+# dx_stream GStreamer elements the native backend requires (no SW fallback).
+REQUIRED_ELEMENTS = ("dxpreprocess", "dxinfer", "dxpostprocess")
+
+
+def missing_native_requirements(element_available, pydxs_available: bool):
+    """Return a list of human-readable missing dependencies for the dxstream backend.
+
+    ``element_available`` is a ``callable(name) -> bool`` checking the GStreamer
+    registry. An empty list means every requirement is satisfied.
+    """
+    missing = []
+    for name in REQUIRED_ELEMENTS:
+        if not element_available(name):
+            missing.append(f"{name} (dx_stream GStreamer plugin)")
+    if not pydxs_available:
+        missing.append("pydxs (dx_stream Python bindings)")
+    return missing
+
+
 def _preprocess_element(cfg: PreprocessCfg) -> str:
     return (
         f"dxpreprocess preprocess-id={cfg.preprocess_id} "

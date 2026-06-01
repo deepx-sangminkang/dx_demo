@@ -88,6 +88,27 @@ channels:
 - `rtsp`: RTSP stream URL
 - `camera`: Camera device index (0, 1, 2, ...)
 
+### Inference Backend (`engine_backend`)
+
+```yaml
+# Inference backend selection
+#   legacy   : Python dx_engine inference (default). dx_stream is OPTIONAL —
+#              on RK3588 the dxconvert/dxscale elements are used for RGA
+#              acceleration only if present, otherwise it falls back to plain
+#              GStreamer / software decoding.
+#   dxstream : Native GStreamer inference (dxpreprocess -> dxinfer ->
+#              dxpostprocess), detections read back via pydxs. This backend
+#              REQUIRES dx_stream and its pydxs bindings to be installed; it has
+#              NO software fallback. If they are missing, startup aborts with a
+#              clear error instead of showing a black screen.
+engine_backend: "legacy"
+```
+
+> **Note:** Neither `requirements.txt` nor `install.sh` installs dx_stream. The
+> `dxstream` backend (and the optional RGA acceleration path of the `legacy`
+> backend) assume dx_stream is already installed on the machine, with its
+> GStreamer plugins reachable via `GST_PLUGIN_PATH`.
+
 ## Hardware-Accelerated Decoding (GStreamer)
 
 By default each channel decodes video on the CPU (software). Setting `decode: "auto"`

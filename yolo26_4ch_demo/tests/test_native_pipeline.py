@@ -10,6 +10,39 @@ import pytest
 from demo import native_pipeline as npl
 
 
+def test_missing_native_requirements_all_present():
+    assert (
+        npl.missing_native_requirements(
+            element_available=lambda name: True, pydxs_available=True
+        )
+        == []
+    )
+
+
+def test_missing_native_requirements_reports_missing_element():
+    missing = npl.missing_native_requirements(
+        element_available=lambda name: name != "dxinfer",
+        pydxs_available=True,
+    )
+    assert any("dxinfer" in m for m in missing)
+    assert len(missing) == 1
+
+
+def test_missing_native_requirements_reports_pydxs():
+    missing = npl.missing_native_requirements(
+        element_available=lambda name: True, pydxs_available=False
+    )
+    assert any("pydxs" in m for m in missing)
+
+
+def test_missing_native_requirements_reports_all():
+    missing = npl.missing_native_requirements(
+        element_available=lambda name: False, pydxs_available=False
+    )
+    # 3 dx_stream elements + pydxs
+    assert len(missing) == 4
+
+
 def test_build_infer_pipeline_video_contains_core_elements():
     p = npl.build_infer_pipeline(
         source_type="video",

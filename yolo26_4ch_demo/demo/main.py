@@ -28,6 +28,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from demo.engine import YOLO26Engine, NativeDisplayMeta
 from demo.overlay import scale_box
 from demo import native_config, native_pipeline, native_signal
+from demo.gst_pipeline import gst_element_available
 from demo.meta_adapter import filter_by_classes
 from demo.pydxs_bridge import PydxsBridge
 from demo.stream_pipeline import StreamPipeline
@@ -750,6 +751,26 @@ class MainWindow(QtWidgets.QMainWindow):
         dxs = config.get("dxstream") or {}
         input_size = int(dxs.get("input_size", 640))
 
+        self.bridge = PydxsBridge()
+
+        # Preflight: the native backend has NO software fallback. If the
+        # dx_stream plugins / pydxs are not installed, fail loudly with an
+        # actionable message instead of showing a silent black screen.
+        missing = native_pipeline.missing_native_requirements(
+            element_available=gst_element_available,
+            pydxs_available=self.bridge.available,
+        )
+        if missing:
+            raise RuntimeError(
+                "engine_backend: dxstream requires dx_stream to be installed, "
+                "but the following are missing:\n  - "
+                + "\n  - ".join(missing)
+                + "\n\nInstall dx_stream + pydxs on this machine (and ensure the "
+                "GStreamer plugins are on GST_PLUGIN_PATH), or set "
+                "engine_backend: legacy in the config to use the Python "
+                "dx_engine backend."
+            )
+
         # Lightweight overlay metadata (no NPU load in Python).
         self.engine = NativeDisplayMeta(input_size, input_size)
         self._build_class_filter_panel(self.engine.classes)
@@ -763,11 +784,6 @@ class MainWindow(QtWidgets.QMainWindow):
         display_size = None
         if dxs.get("display_width") and dxs.get("display_height"):
             display_size = (int(dxs["display_width"]), int(dxs["display_height"]))
-
-        self.bridge = PydxsBridge()
-        if not self.bridge.available:
-            print("[WARN] pydxs unavailable: detections will be empty "
-                  "(native backend requires dx_stream/pydxs on the board).")
 
         for idx, ch_cfg in enumerate(config.get("channels", [])):
             if not ch_cfg.get("enabled", True):

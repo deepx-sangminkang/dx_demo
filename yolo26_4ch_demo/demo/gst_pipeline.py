@@ -120,6 +120,12 @@ def _gst_element_available(name: str) -> bool:
         return False
 
 
+def gst_element_available(name: str) -> bool:
+    """Public wrapper for GStreamer element availability checks."""
+
+    return _gst_element_available(name)
+
+
 def probe_platform(elements_to_check: Optional[Iterable[str]] = None) -> PlatformProbe:
     """Collect system facts needed for platform detection from the live system."""
 

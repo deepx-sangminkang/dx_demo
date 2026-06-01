@@ -86,6 +86,27 @@ channels:
 - `rtsp`: RTSP 스트림 URL
 - `camera`: 카메라 장치 번호 (0, 1, 2, ...)
 
+### 추론 백엔드 (`engine_backend`)
+
+```yaml
+# 추론 백엔드 선택
+#   legacy   : Python dx_engine 추론 (기본값). dx_stream은 선택 사항 —
+#              RK3588에서 dxconvert/dxscale 요소가 있으면 RGA 가속에만
+#              사용하고, 없으면 순수 GStreamer / 소프트웨어 디코딩으로
+#              자동 폴백한다.
+#   dxstream : 네이티브 GStreamer 추론 (dxpreprocess -> dxinfer ->
+#              dxpostprocess), 검출 결과는 pydxs로 읽어온다. 이 백엔드는
+#              dx_stream 및 pydxs 바인딩 설치를 필수로 요구하며 소프트웨어
+#              폴백이 없다. 누락 시 검은 화면 대신 명확한 에러로 시작이
+#              중단된다.
+engine_backend: "legacy"
+```
+
+> **참고:** `requirements.txt`와 `install.sh` 모두 dx_stream을 설치하지 않는다.
+> `dxstream` 백엔드(그리고 `legacy` 백엔드의 선택적 RGA 가속 경로)는 dx_stream이
+> 이미 설치되어 있고 GStreamer 플러그인이 `GST_PLUGIN_PATH`로 접근 가능하다고
+> 가정한다.
+
 ## 하드웨어 가속 디코딩 (GStreamer)
 
 기본적으로 각 채널은 CPU(소프트웨어)로 비디오를 디코딩합니다. `decode: "auto"`(또는 `"hw"`)로
