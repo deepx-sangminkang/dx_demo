@@ -163,6 +163,17 @@ class OutputItem:
 _hw_decode_env_lock = threading.Lock()
 _hw_decode_env: Optional[Dict[str, Any]] = None
 
+# Cross-channel HW decode verdict. The HW GStreamer probe is slow (it must wait
+# for the pipeline to preroll before we know whether it yields frames) and, on
+# boards where OpenCV's GStreamer appsink never negotiates caps, every channel
+# would pay that cost serially -- so with 4 channels the window can close before
+# the later channels even start. To avoid that, only the *first* channel probes
+# HW; once it reports HW unusable we cache the verdict and every other channel
+# opens straight in software, so all channels come up quickly.
+_hw_verdict_lock = threading.Lock()
+_hw_probe_started = False
+_hw_known_bad = False
+
 
 def _get_hw_decode_env() -> Dict[str, Any]:
     """Detect platform / OpenCV GStreamer support once and cache the result."""
@@ -226,18 +237,47 @@ class CaptureThread(threading.Thread):
         self._stop_event.set()
 
     def _open_capture(self) -> "cv2.VideoCapture":
-        """Open the input source, preferring HW decoding with SW fallback."""
+        """Open the input source, preferring HW decoding with SW fallback.
+
+        Only the first channel actually probes the (slow, often-doomed) HW
+        decode path; once HW is known bad every other channel skips straight to
+        software so the demo's channels all start promptly instead of stalling
+        one-by-one behind serialized HW probes.
+        """
+
+        global _hw_probe_started, _hw_known_bad
 
         env = _get_hw_decode_env()
+        decode_mode = self.decode_mode
+
+        if decode_mode in ("auto", "hw"):
+            with _hw_verdict_lock:
+                if _hw_known_bad:
+                    # A previous channel proved HW decode yields no frames here.
+                    decode_mode = "sw"
+                elif _hw_probe_started:
+                    # Another channel is already probing HW; don't wait behind
+                    # it -- come up now in software.
+                    decode_mode = "sw"
+                else:
+                    _hw_probe_started = True
+
         cap, used_hw, reason, color_format = gst.open_capture(
             source=self.source,
             source_type=self.source_type,
-            decode_mode=self.decode_mode,
+            decode_mode=decode_mode,
             platform=env["platform"],
             opencv_gstreamer=env["opencv_gstreamer"],
             rga_convert=env["rga_convert"],
             scale_size=self.scale_size,
         )
+
+        if self.decode_mode in ("auto", "hw") and not used_hw:
+            # The HW probe (or a forced-HW attempt) did not yield HW decode;
+            # remember so later channels skip the slow probe entirely.
+            with _hw_verdict_lock:
+                _hw_known_bad = True
+
         self.used_hw = used_hw
         self.color_format = color_format
         decode_kind = "HW (GStreamer)" if used_hw else "SW"
