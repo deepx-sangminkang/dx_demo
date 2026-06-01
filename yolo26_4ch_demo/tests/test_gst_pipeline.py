@@ -378,6 +378,29 @@ def test_should_use_hw_decode_auto_unknown_platform_falls_back():
     assert decision.use_hw is False
 
 
+def test_should_use_hw_decode_auto_rk3588_defaults_to_sw():
+    # HW decode through OpenCV's appsink is unusable on RK3588 (dxconvert
+    # deadlocks, videoconvert variants fail), so 'auto' must default to SW
+    # instead of probing a pipeline that hangs/wedges the VPU.
+    decision = gp.resolve_decode(
+        decode_mode="auto",
+        opencv_gstreamer=True,
+        platform=gp.Platform.RK3588,
+    )
+    assert decision.use_hw is False
+    assert decision.reason  # explains the rk3588 auto->sw policy
+
+
+def test_should_use_hw_decode_hw_mode_rk3588_still_attempts_hw():
+    # Explicit 'hw' remains an opt-in escape hatch for HW experimentation.
+    decision = gp.resolve_decode(
+        decode_mode="hw",
+        opencv_gstreamer=True,
+        platform=gp.Platform.RK3588,
+    )
+    assert decision.use_hw is True
+
+
 def test_should_use_hw_decode_hw_mode_no_gstreamer_falls_back():
     decision = gp.resolve_decode(
         decode_mode="hw",
@@ -424,7 +447,7 @@ def test_open_capture_hw_success(monkeypatch):
     cap, used_hw, reason, color_format = gp.open_capture(
         source="/data/a.mp4",
         source_type="video",
-        decode_mode="auto",
+        decode_mode="hw",
         platform=gp.Platform.RK3588,
         opencv_gstreamer=True,
         video_capture_factory=factory,
@@ -443,7 +466,7 @@ def test_open_capture_hw_rga_reports_rgb(monkeypatch):
     cap, used_hw, reason, color_format = gp.open_capture(
         source="/data/a.mp4",
         source_type="video",
-        decode_mode="auto",
+        decode_mode="hw",
         platform=gp.Platform.RK3588,
         opencv_gstreamer=True,
         rga_convert=True,
@@ -464,7 +487,7 @@ def test_open_capture_hw_open_fails_falls_back_to_sw(monkeypatch):
     cap, used_hw, reason, color_format = gp.open_capture(
         source="/data/a.mp4",
         source_type="video",
-        decode_mode="auto",
+        decode_mode="hw",
         platform=gp.Platform.RK3588,
         opencv_gstreamer=True,
         rga_convert=True,
@@ -498,7 +521,7 @@ def test_open_capture_hw_opens_but_no_frames_falls_back_to_sw(monkeypatch):
     cap, used_hw, reason, color_format = gp.open_capture(
         source="/data/a.mp4",
         source_type="video",
-        decode_mode="auto",
+        decode_mode="hw",
         platform=gp.Platform.RK3588,
         opencv_gstreamer=True,
         rga_convert=True,
@@ -539,7 +562,7 @@ def test_open_capture_hw_blocking_grab_times_out_to_sw(monkeypatch):
     _, used_hw, reason, _ = gp.open_capture(
         source="/data/a.mp4",
         source_type="video",
-        decode_mode="auto",
+        decode_mode="hw",
         platform=gp.Platform.RK3588,
         opencv_gstreamer=True,
         rga_convert=True,

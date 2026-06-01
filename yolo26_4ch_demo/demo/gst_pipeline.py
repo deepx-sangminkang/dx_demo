@@ -233,6 +233,19 @@ def resolve_decode(
             False, platform, "no supported HW decoder detected; using SW decode"
         )
 
+    if mode == "auto" and platform == Platform.RK3588:
+        # HW decode is not usable through OpenCV's appsink on RK3588: the
+        # dxconvert (RGA, NV12->RGB) pipeline deadlocks in PAUSED and the
+        # videoconvert variants fail to negotiate. Probing it hangs and can
+        # wedge the VPU, so 'auto' stays on SW here. Use decode: "hw" to force
+        # an HW attempt for experimentation.
+        return DecodeDecision(
+            False,
+            platform,
+            "HW decode unusable via OpenCV appsink on rk3588; using SW decode "
+            "(set decode: 'hw' to force an attempt)",
+        )
+
     return DecodeDecision(True, platform, f"using HW decode on {platform.value}")
 
 
