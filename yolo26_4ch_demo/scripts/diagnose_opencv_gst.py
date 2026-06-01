@@ -74,6 +74,17 @@ def try_pipeline(name: str, pipeline: str, want_frames: int = 5) -> None:
     print(f"   {pipeline}")
     print("-" * 70)
     cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+    # Bound open/read so a deadlocked variant cannot hang the whole probe.
+    for prop_name, value in (
+        ("CAP_PROP_OPEN_TIMEOUT_MSEC", 5000),
+        ("CAP_PROP_READ_TIMEOUT_MSEC", 3000),
+    ):
+        prop = getattr(cv2, prop_name, None)
+        if prop is not None:
+            try:
+                cap.set(prop, value)
+            except Exception:
+                pass
     if not cap.isOpened():
         print("   RESULT: isOpened() == False (pipeline failed to construct)")
         return
