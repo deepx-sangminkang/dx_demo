@@ -823,6 +823,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 appsink_name=f"sink{idx}",
                 error_callback=self._on_native_error,
                 meta_src_name=native_pipeline.meta_source_name(f"sink{idx}"),
+                loop=ch_cfg.get("type", "video") == "video",
             )
             self.stream_pipelines.append(pipe)
 

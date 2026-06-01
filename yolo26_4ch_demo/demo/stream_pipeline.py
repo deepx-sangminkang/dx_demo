@@ -53,6 +53,7 @@ class StreamPipeline:
         sample_extractor: Optional[SampleExtractor] = None,
         error_callback: Optional[ErrorCallback] = None,
         meta_src_name: Optional[str] = None,
+        loop: bool = False,
     ):
         self.channel_id = channel_id
         self.pipeline_str = pipeline_str
@@ -62,6 +63,7 @@ class StreamPipeline:
         self.appsink_name = appsink_name
         self.error_callback = error_callback
         self.meta_src_name = meta_src_name
+        self.loop = loop
 
         self._gst = gst
         self._extract = sample_extractor
@@ -293,8 +295,31 @@ class StreamPipeline:
         print(f"[WARN] {text}", file=sys.stderr, flush=True)
 
     def _on_bus_eos(self, _bus, _message):  # pragma: no cover - board glue
-        # File sources reach EOS at end of clip; log so a blank display has a
-        # visible explanation. Looping is a future enhancement.
+        # File sources reach EOS at end of clip. When looping is enabled, rewind
+        # to the start so the demo plays continuously; otherwise log and stop.
+        if self._handle_eos():
+            msg = f"Channel {self.channel_id}: end of stream -> looping"
+            logger.info(msg)
+            print(f"[INFO] {msg}", file=sys.stderr, flush=True)
+            return
         msg = f"Channel {self.channel_id}: end of stream (EOS)"
         logger.info(msg)
         print(f"[INFO] {msg}", file=sys.stderr, flush=True)
+
+    def _handle_eos(self) -> bool:
+        """Rewind the pipeline to loop the source. Returns True if it looped."""
+
+        if not self.loop or self._pipeline is None:
+            return False
+        self._seek_to_start()
+        return True
+
+    def _seek_to_start(self) -> None:
+        """Flush-seek the pipeline back to the first frame."""
+
+        gst = self._gst
+        self._pipeline.seek_simple(
+            gst.Format.TIME,
+            gst.SeekFlags.FLUSH | gst.SeekFlags.KEY_UNIT,
+            0,
+        )
