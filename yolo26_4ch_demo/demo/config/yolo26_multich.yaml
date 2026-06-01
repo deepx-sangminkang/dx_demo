@@ -46,7 +46,7 @@ rga_resize: false
 #              Requires the dx_stream plugins + pydxs on the board and has NO
 #              software fallback (startup aborts with a clear error if missing).
 #              Verify with: gst-inspect-1.0 dxinfer && python -c "import pydxs"
-engine_backend: "legacy"
+engine_backend: "dxstream"
 
 # Native dx_stream backend settings (used only when engine_backend: dxstream).
 dxstream:
