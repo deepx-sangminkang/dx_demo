@@ -370,6 +370,32 @@ def build_gst_pipeline(
 
 # ===== Capture opening with graceful fallback =====
 
+# Bound HW preroll: OpenCV's ``grab()`` has no timeout and blocks forever when a
+# HW GStreamer pipeline never prerolls (e.g. a multiqueue/decoder deadlock),
+# which would hang the capture thread instead of falling back. The GStreamer
+# backend honours these read/open timeouts so validation can give up and use SW.
+_HW_OPEN_TIMEOUT_MS = 5000
+_HW_READ_TIMEOUT_MS = 3000
+
+
+def _apply_hw_timeouts(cap: "cv2.VideoCapture") -> None:
+    """Bound the HW capture's open/read so a stalled pipeline cannot hang us."""
+
+    setter = getattr(cap, "set", None)
+    if not callable(setter):
+        return
+    for prop_name, value in (
+        ("CAP_PROP_OPEN_TIMEOUT_MSEC", _HW_OPEN_TIMEOUT_MS),
+        ("CAP_PROP_READ_TIMEOUT_MSEC", _HW_READ_TIMEOUT_MS),
+    ):
+        prop = getattr(cv2, prop_name, None)
+        if prop is None:
+            continue
+        try:
+            setter(prop, value)
+        except Exception:
+            pass
+
 
 def _hw_capture_yields_frame(cap: "cv2.VideoCapture") -> bool:
     """Return True if the (opened) HW capture can actually produce a frame.
@@ -428,6 +454,7 @@ def open_capture(
             )
             cap = video_capture_factory(pipeline, cv2.CAP_GSTREAMER)
             if cap is not None and cap.isOpened():
+                _apply_hw_timeouts(cap)
                 if _hw_capture_yields_frame(cap):
                     color_format = hw_output_color_format(
                         source_type, platform, rga_convert

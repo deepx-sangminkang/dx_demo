@@ -391,6 +391,7 @@ class _FakeCap:
         self._opened = opened
         self._grab_ok = grab_ok
         self.released = False
+        self.set_calls = []
 
     def isOpened(self):
         return self._opened
@@ -400,6 +401,10 @@ class _FakeCap:
 
     def release(self):
         self.released = True
+
+    def set(self, prop, value):
+        self.set_calls.append((prop, value))
+        return True
 
 
 def test_open_capture_hw_success(monkeypatch):
@@ -500,6 +505,27 @@ def test_open_capture_hw_opens_but_no_frames_falls_back_to_sw(monkeypatch):
     assert caps[0][0].released is True
     # SW fallback opens the raw source.
     assert caps[1][1] == "/data/a.mp4"
+
+
+def test_open_capture_hw_sets_read_timeout(monkeypatch):
+    """The HW capture must get a bounded read timeout so a stalled pipeline
+    cannot block grab() forever (it should fall back instead)."""
+
+    import cv2 as _cv2
+
+    cap = _FakeCap(True, grab_ok=True)
+    gp.open_capture(
+        source="/data/a.mp4",
+        source_type="video",
+        decode_mode="auto",
+        platform=gp.Platform.RK3588,
+        opencv_gstreamer=True,
+        rga_convert=True,
+        video_capture_factory=lambda *a, **k: cap,
+    )
+    read_prop = getattr(_cv2, "CAP_PROP_READ_TIMEOUT_MSEC", None)
+    if read_prop is not None:
+        assert any(prop == read_prop for prop, _ in cap.set_calls)
 
 
 def test_open_capture_sw_mode_skips_hw(monkeypatch):
