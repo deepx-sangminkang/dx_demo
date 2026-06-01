@@ -112,6 +112,11 @@ def build_infer_pipeline(
         w, h = display_size
         tail = f" ! {q} ! dxscale width={w} height={h}"
 
+    # dxpostprocess only attaches metadata; the buffer pixels are still the
+    # decoder's native format (NV12/I420). Convert to RGB with explicit caps so
+    # the appsink delivers deterministic 3-channel frames for the Qt display.
+    tail += " ! videoconvert ! video/x-raw,format=RGB"
+
     return (
         f"{src} ! {q} ! {pre} ! {q} ! {inf} ! {q} ! {post}{tail} ! {q} ! "
         f"appsink name={appsink_name} {_APPSINK_OPTS}"

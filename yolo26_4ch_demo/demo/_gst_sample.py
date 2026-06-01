@@ -30,13 +30,25 @@ def extract_frame_and_buffer(
     if buffer is None or caps is None:
         return None, None
 
+    # Guard against empty/unnegotiated caps so we never call
+    # gst_caps_get_structure / gst_structure_get_int on NULL (which would emit
+    # the "GST_IS_CAPS failed" / "structure != NULL" GLib criticals).
+    if caps.get_size() < 1:
+        return None, buffer
     structure = caps.get_structure(0)
+    if structure is None:
+        return None, buffer
+
     ok_w, width = structure.get_int("width")
     ok_h, height = structure.get_int("height")
     if not (ok_w and ok_h):
-        return None, None
+        return None, buffer
 
     fmt = structure.get_string("format") or "RGB"
+    if fmt not in ("RGB", "BGR"):
+        # The pipeline pins format=RGB before the appsink; anything else means
+        # the convert element was dropped. Skip rather than misinterpret bytes.
+        return None, buffer
 
     ok, mapinfo = buffer.map(Gst.MapFlags.READ)
     if not ok:

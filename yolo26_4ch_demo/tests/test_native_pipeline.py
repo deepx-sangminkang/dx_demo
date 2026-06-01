@@ -32,10 +32,16 @@ def test_build_infer_pipeline_video_contains_core_elements():
     assert "function-name=PostProcess" in p
     assert "appsink name=sink0" in p
     assert "drop=true" in p and "max-buffers=1" in p and "sync=false" in p
+    # The display branch must convert to RGB with explicit caps so the appsink
+    # delivers deterministic 3-channel frames (dxpostprocess does not convert
+    # pixels, so the raw frame would otherwise be the decoder's NV12/I420).
+    assert "videoconvert" in p
+    assert "video/x-raw,format=RGB" in p
     assert (
         p.index("dxpreprocess")
         < p.index("dxinfer")
         < p.index("dxpostprocess")
+        < p.index("videoconvert")
         < p.index("appsink")
     )
 
@@ -52,7 +58,12 @@ def test_build_infer_pipeline_rtsp_and_display_scale():
     )
     assert "rtspsrc location=rtsp://10.0.0.1/s" in p
     assert "dxscale width=320 height=240" in p
-    assert p.index("dxpostprocess") < p.index("dxscale") < p.index("appsink")
+    assert (
+        p.index("dxpostprocess")
+        < p.index("dxscale")
+        < p.index("videoconvert")
+        < p.index("appsink")
+    )
 
 
 def test_build_infer_pipeline_camera_integer_index():
