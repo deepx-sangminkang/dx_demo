@@ -126,8 +126,19 @@ class StreamPipeline:
         bus.connect("message::error", self._on_bus_error)
         bus.connect("message::warning", self._on_bus_warning)
         bus.connect("message::eos", self._on_bus_eos)
+        bus.connect("message::segment-done", self._on_bus_segment_done)
 
         self._loop = GLib.MainLoop()
+        if self._should_loop():
+            # Use SEGMENT looping for files: preroll in PAUSED, then issue the
+            # initial flushing SEGMENT seek so the source emits SEGMENT_DONE
+            # (instead of EOS) at the end of the clip. Looping on EOS via a
+            # flush-seek is unreliable on RK3588 (qtdemux's streaming task dies
+            # with 'Internal data stream error (-5)'); SEGMENT looping never lets
+            # the stream reach EOS, so that code path is avoided entirely.
+            self._pipeline.set_state(self._gst.State.PAUSED)
+            self._pipeline.get_state(5 * self._gst.SECOND)
+            self._segment_seek(flush=True)
         self._pipeline.set_state(self._gst.State.PLAYING)
         self._thread = threading.Thread(target=self._loop.run, daemon=True)
         self._thread.start()
@@ -295,17 +306,13 @@ class StreamPipeline:
         print(f"[WARN] {text}", file=sys.stderr, flush=True)
 
     def _on_bus_eos(self, _bus, _message):  # pragma: no cover - board glue
-        # File sources reach EOS at end of clip. When looping is enabled, rewind
-        # to the start so the demo plays continuously; otherwise log and stop.
+        # With SEGMENT looping the stream never reaches EOS; if we still get one
+        # (e.g. SEGMENT seek unsupported by an element), fall back to a deferred
+        # flush-seek so playback at least attempts to restart.
         if self._should_loop():
             from gi.repository import GLib  # type: ignore
 
-            # Defer the seek to the next main-loop iteration. Seeking directly
-            # inside the EOS handler races qtdemux's still-unwinding streaming
-            # task and yields 'Internal data stream error (-5)'; running it from
-            # an idle callback lets the EOS settle first so the flush-seek
-            # cleanly restarts data flow without tearing down decodebin.
-            GLib.idle_add(self._deferred_loop_seek)
+            GLib.idle_add(self._deferred_segment_restart)
             msg = f"Channel {self.channel_id}: end of stream -> looping"
             logger.info(msg)
             print(f"[INFO] {msg}", file=sys.stderr, flush=True)
@@ -314,24 +321,46 @@ class StreamPipeline:
         logger.info(msg)
         print(f"[INFO] {msg}", file=sys.stderr, flush=True)
 
-    def _deferred_loop_seek(self):  # pragma: no cover - board glue
+    def _on_bus_segment_done(self, _bus, _message):  # pragma: no cover - board glue
+        # Reaching the end of the SEGMENT: immediately re-arm a non-flushing
+        # SEGMENT seek back to the start for gapless looping.
         try:
-            self._seek_to_start()
+            self._segment_seek(flush=False)
         except Exception as exc:
-            logger.exception("loop seek failed (ch %s): %s", self.channel_id, exc)
+            logger.exception("segment loop seek failed (ch %s): %s",
+                             self.channel_id, exc)
+
+    def _deferred_segment_restart(self):  # pragma: no cover - board glue
+        try:
+            self._segment_seek(flush=True)
+        except Exception as exc:
+            logger.exception("loop restart failed (ch %s): %s",
+                             self.channel_id, exc)
         return False  # one-shot idle source
 
     def _should_loop(self) -> bool:
-        """Whether an EOS should rewind this source to play again."""
+        """Whether this source should rewind to play again instead of stopping."""
 
         return self.loop and self._pipeline is not None
 
-    def _seek_to_start(self) -> None:
-        """Flush-seek the pipeline back to the first frame to loop playback."""
+    def _segment_seek(self, flush: bool) -> None:
+        """Seek to the start using a SEGMENT seek for gapless looping.
+
+        ``flush=True`` is used to arm the segment loop (and to recover from a
+        stray EOS); the continuation seek issued on SEGMENT_DONE is non-flushing
+        so playback wraps around without a visible gap.
+        """
 
         gst = self._gst
-        self._pipeline.seek_simple(
+        flags = gst.SeekFlags.SEGMENT
+        if flush:
+            flags |= gst.SeekFlags.FLUSH
+        self._pipeline.seek(
+            1.0,
             gst.Format.TIME,
-            gst.SeekFlags.FLUSH | gst.SeekFlags.KEY_UNIT,
+            flags,
+            gst.SeekType.SET,
             0,
+            gst.SeekType.SET,
+            -1,
         )

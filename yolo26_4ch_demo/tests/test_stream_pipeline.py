@@ -260,6 +260,11 @@ def test_on_new_sample_falls_back_to_bridge_without_stash():
 class _SeekFlags:
     FLUSH = 1
     KEY_UNIT = 2
+    SEGMENT = 4
+
+
+class _SeekType:
+    SET = "set"
 
 
 class _Format:
@@ -269,6 +274,7 @@ class _Format:
 class _SeekGst:
     FlowReturn = _FlowReturn
     SeekFlags = _SeekFlags
+    SeekType = _SeekType
     Format = _Format
 
 
@@ -276,8 +282,8 @@ class _FakePipeline:
     def __init__(self):
         self.seeks = []
 
-    def seek_simple(self, fmt, flags, pos):
-        self.seeks.append((fmt, flags, pos))
+    def seek(self, rate, fmt, flags, start_type, start, stop_type, stop):
+        self.seeks.append((rate, fmt, flags, start_type, start, stop_type, stop))
         return True
 
 
@@ -302,11 +308,38 @@ def test_should_loop_false_without_pipeline():
     assert pipe._should_loop() is False
 
 
-def test_seek_to_start_issues_flush_seek():
+def test_segment_seek_flush_arms_segment_loop():
     pipe = _make_pipe()
     pipe._gst = _SeekGst
     pipe._pipeline = _FakePipeline()
-    pipe._seek_to_start()
+    pipe._segment_seek(flush=True)
     assert pipe._pipeline.seeks == [
-        (_Format.TIME, _SeekFlags.FLUSH | _SeekFlags.KEY_UNIT, 0)
+        (
+            1.0,
+            _Format.TIME,
+            _SeekFlags.FLUSH | _SeekFlags.SEGMENT,
+            _SeekType.SET,
+            0,
+            _SeekType.SET,
+            -1,
+        )
+    ]
+
+
+def test_segment_seek_non_flush_continues_loop():
+    pipe = _make_pipe()
+    pipe._gst = _SeekGst
+    pipe._pipeline = _FakePipeline()
+    pipe._segment_seek(flush=False)
+    # The continuation seek must NOT flush (gapless), only SEGMENT.
+    assert pipe._pipeline.seeks == [
+        (
+            1.0,
+            _Format.TIME,
+            _SeekFlags.SEGMENT,
+            _SeekType.SET,
+            0,
+            _SeekType.SET,
+            -1,
+        )
     ]
