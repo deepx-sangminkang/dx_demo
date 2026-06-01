@@ -12,35 +12,41 @@ model: "assets/models/yolo26n-1.dxnn"
 decode: "auto"
 
 workers:
-  preprocess: 1
+  # rockpi profiling showed read~90 but pre=inf=draw~30 (per-stage totals):
+  # the inference pipeline is the bottleneck while the NPU itself is starved.
+  # Raising preprocess alone just shifts the backpressure to draw, so scale
+  # preprocess (CPU-bound letterbox/resize/normalize) and draw (detection
+  # post-processing) together. wait (single NPU async result collector with
+  # in-flight pipelining) stays at 1.
+  preprocess: 2
   wait: 1
-  draw: 1
+  draw: 2
 
 channels:
   - name: "ch1"
     type: "video"
     source: "assets/videos/cctv-city-road.mov"
     enabled: true
-    max_fps: 25
+    max_fps: 45
     # decode: "auto"   # optional per-channel override (auto/hw/sw)
 
   - name: "ch2"
     type: "video"
     source: "assets/videos/dron-citry-road.mov"
     enabled: true
-    max_fps: 25
+    max_fps: 45
 
   - name: "ch3"
     type: "video"
     source: "assets/videos/carrierbag.mp4"
     enabled: true
-    max_fps: 25
+    max_fps: 45
 
   - name: "ch4"
     type: "video"
     source: "assets/videos/dance-group.mov"
     enabled: true
-    max_fps: 25
+    max_fps: 45
 
 # rtsp example
 #  - name: "ch4"
