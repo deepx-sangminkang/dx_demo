@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import enum
 import os
+import threading
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, List, Optional, Set, Tuple, Union
 
@@ -371,42 +372,28 @@ def build_gst_pipeline(
 # ===== Capture opening with graceful fallback =====
 
 # Bound HW preroll: OpenCV's ``grab()`` has no timeout and blocks forever when a
-# HW GStreamer pipeline never prerolls (e.g. a multiqueue/decoder deadlock),
-# which would hang the capture thread instead of falling back. The GStreamer
-# backend honours these read/open timeouts so validation can give up and use SW.
-_HW_OPEN_TIMEOUT_MS = 5000
-_HW_READ_TIMEOUT_MS = 3000
+# HW GStreamer pipeline never prerolls (e.g. a multiqueue/decoder deadlock). We
+# cannot rely on ``CAP_PROP_READ_TIMEOUT_MSEC`` because some OpenCV builds (e.g.
+# the 4.10 build shipped on RK3588 boards) report it as an "unhandled property"
+# for the GStreamer backend, so the read stays unbounded. Instead we validate
+# the first ``grab()`` on a watchdog thread and treat a grab that does not return
+# within this budget as a dead pipeline, falling back to software decoding.
+_HW_GRAB_TIMEOUT_S = 3.0
 
 
-def _apply_hw_timeouts(cap: "cv2.VideoCapture") -> None:
-    """Bound the HW capture's open/read so a stalled pipeline cannot hang us."""
-
-    setter = getattr(cap, "set", None)
-    if not callable(setter):
-        return
-    for prop_name, value in (
-        ("CAP_PROP_OPEN_TIMEOUT_MSEC", _HW_OPEN_TIMEOUT_MS),
-        ("CAP_PROP_READ_TIMEOUT_MSEC", _HW_READ_TIMEOUT_MS),
-    ):
-        prop = getattr(cv2, prop_name, None)
-        if prop is None:
-            continue
-        try:
-            setter(prop, value)
-        except Exception:
-            pass
-
-
-def _hw_capture_yields_frame(cap: "cv2.VideoCapture") -> bool:
+def _hw_capture_yields_frame(
+    cap: "cv2.VideoCapture", timeout_s: Optional[float] = None
+) -> bool:
     """Return True if the (opened) HW capture can actually produce a frame.
 
     A GStreamer HW pipeline may report ``isOpened()`` even when caps never get
     negotiated and no buffer ever reaches the appsink (e.g. the decoder element
     fails to link on the running device). In that state OpenCV emits
     ``cannot query video width/height`` warnings and every ``read()`` returns
-    ``False``, which the rest of the demo cannot distinguish from a genuine HW
-    decode. Grabbing one frame here lets us detect that dead-pipeline case and
-    fall back to software decoding instead of spinning in a reopen loop.
+    ``False`` -- or, worse, ``grab()`` blocks forever waiting for a buffer that
+    never comes. Grabbing one frame under a watchdog timeout lets us detect both
+    the dead-pipeline and the never-prerolls case and fall back to software
+    decoding instead of hanging or spinning in a reopen loop.
 
     Captures without a ``grab`` method (e.g. lightweight test doubles) are
     assumed to work so pure-logic tests remain unaffected.
@@ -415,10 +402,27 @@ def _hw_capture_yields_frame(cap: "cv2.VideoCapture") -> bool:
     grab = getattr(cap, "grab", None)
     if grab is None:
         return True
-    try:
-        return bool(grab())
-    except Exception:
+
+    if timeout_s is None:
+        timeout_s = _HW_GRAB_TIMEOUT_S
+
+    result: dict = {}
+
+    def _worker() -> None:
+        try:
+            result["ok"] = bool(grab())
+        except Exception:
+            result["ok"] = False
+
+    watchdog = threading.Thread(target=_worker, daemon=True)
+    watchdog.start()
+    watchdog.join(timeout_s)
+    if watchdog.is_alive():
+        # grab() is still blocking past the budget: the HW pipeline never
+        # prerolled. Abandon it (the thread stays parked on the dead cap, which
+        # the caller releases) and fall back to software decoding.
         return False
+    return bool(result.get("ok", False))
 
 
 def open_capture(
@@ -454,7 +458,6 @@ def open_capture(
             )
             cap = video_capture_factory(pipeline, cv2.CAP_GSTREAMER)
             if cap is not None and cap.isOpened():
-                _apply_hw_timeouts(cap)
                 if _hw_capture_yields_frame(cap):
                     color_format = hw_output_color_format(
                         source_type, platform, rga_convert

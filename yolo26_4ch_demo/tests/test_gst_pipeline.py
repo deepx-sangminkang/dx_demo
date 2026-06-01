@@ -7,6 +7,8 @@ decisions) so they run without any real hardware decoder.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from demo import gst_pipeline as gp
@@ -387,9 +389,10 @@ def test_should_use_hw_decode_hw_mode_no_gstreamer_falls_back():
 
 
 class _FakeCap:
-    def __init__(self, opened: bool, grab_ok: bool = True):
+    def __init__(self, opened: bool, grab_ok: bool = True, grab_block_s: float = 0.0):
         self._opened = opened
         self._grab_ok = grab_ok
+        self._grab_block_s = grab_block_s
         self.released = False
         self.set_calls = []
 
@@ -397,6 +400,8 @@ class _FakeCap:
         return self._opened
 
     def grab(self):
+        if self._grab_block_s:
+            time.sleep(self._grab_block_s)
         return self._grab_ok
 
     def release(self):
@@ -507,14 +512,15 @@ def test_open_capture_hw_opens_but_no_frames_falls_back_to_sw(monkeypatch):
     assert caps[1][1] == "/data/a.mp4"
 
 
-def test_open_capture_hw_sets_read_timeout(monkeypatch):
-    """The HW capture must get a bounded read timeout so a stalled pipeline
-    cannot block grab() forever (it should fall back instead)."""
+def test_open_capture_hw_blocking_grab_times_out_to_sw(monkeypatch):
+    """A HW pipeline whose grab() blocks past the budget must not hang the
+    caller: the watchdog times out and we fall back to software decoding."""
 
-    import cv2 as _cv2
+    cap = _FakeCap(True, grab_ok=True, grab_block_s=5.0)
+    monkeypatch.setattr(gp, "_HW_GRAB_TIMEOUT_S", 0.2)
 
-    cap = _FakeCap(True, grab_ok=True)
-    gp.open_capture(
+    start = time.time()
+    _, used_hw, reason, _ = gp.open_capture(
         source="/data/a.mp4",
         source_type="video",
         decode_mode="auto",
@@ -523,9 +529,15 @@ def test_open_capture_hw_sets_read_timeout(monkeypatch):
         rga_convert=True,
         video_capture_factory=lambda *a, **k: cap,
     )
-    read_prop = getattr(_cv2, "CAP_PROP_READ_TIMEOUT_MSEC", None)
-    if read_prop is not None:
-        assert any(prop == read_prop for prop, _ in cap.set_calls)
+    elapsed = time.time() - start
+    assert used_hw is False
+    assert "produced no frames" in reason
+    assert elapsed < 2.0  # did not wait for the 5s blocking grab
+
+
+def test_hw_capture_yields_frame_blocking_grab_returns_false():
+    cap = _FakeCap(True, grab_ok=True, grab_block_s=5.0)
+    assert gp._hw_capture_yields_frame(cap, timeout_s=0.2) is False
 
 
 def test_open_capture_sw_mode_skips_hw(monkeypatch):
