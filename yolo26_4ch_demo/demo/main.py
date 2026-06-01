@@ -471,6 +471,19 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._last_throughput_log_ts = now
 
+        # The dxstream backend bypasses the Python worker stages entirely
+        # (read/pre/inf/draw counters stay at 0), so report the native pipeline's
+        # aggregate display FPS instead of a misleading all-zero worker line.
+        if getattr(self, "engine_backend", "legacy") == "dxstream":
+            count = getattr(self, "_native_frame_count", 0)
+            t0 = getattr(self, "_native_fps_t0", None)
+            native_fps = count / (now - t0) if (t0 and now > t0) else 0.0
+            print(
+                "[THROUGHPUT] dxstream native display={:.1f} fps "
+                "(total frames={})".format(native_fps, count)
+            )
+            return
+
         # Read throughput stats from the workers module.
         read_fps = get_fps("read")
         pre_fps = get_fps("pre")
@@ -617,7 +630,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._threads: List[threading.Thread] = []
         self.stream_pipelines: List[StreamPipeline] = []
 
-        if native_config.get_engine_backend(config) == "dxstream":
+        self.engine_backend = native_config.get_engine_backend(config)
+        if self.engine_backend == "dxstream":
             self._init_dxstream_backend(config)
             return
 
@@ -752,6 +766,8 @@ class MainWindow(QtWidgets.QMainWindow):
         input_size = int(dxs.get("input_size", 640))
 
         self.bridge = PydxsBridge()
+        self._native_frame_count = 0
+        self._native_fps_t0: Optional[float] = None
 
         # Preflight: the native backend has NO software fallback. If the
         # dx_stream plugins / pydxs are not installed, fail loudly with an
@@ -805,6 +821,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 frame_callback=self._on_native_frame,
                 detection_callback=self._on_native_detections,
                 appsink_name=f"sink{idx}",
+                error_callback=self._on_native_error,
             )
             self.stream_pipelines.append(pipe)
 
@@ -814,8 +831,25 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_native_frame(self, channel_id: int, frame: np.ndarray) -> None:
         """GStreamer-thread callback: forward a decoded frame to the Qt display."""
 
+        if getattr(self, "_native_fps_t0", None) is None:
+            self._native_fps_t0 = time.time()
+        self._native_frame_count = getattr(self, "_native_frame_count", 0) + 1
         ch, out_frame, meta = native_signal.build_frame_payload(channel_id, frame)
         self.frame_ready.emit(ch, out_frame, meta)
+
+    def _on_native_error(self, channel_id: int, message: str) -> None:
+        """GStreamer-thread callback: a native pipeline reported a fatal error.
+
+        StreamPipeline already logs the full error to stderr; this hook keeps a
+        single place to react (currently informational) without crashing the
+        GLib loop thread.
+        """
+
+        print(
+            f"[ERROR] Channel {channel_id}: native pipeline error - {message}",
+            file=sys.stderr,
+            flush=True,
+        )
 
     def _on_native_detections(
         self, channel_id: int, detections: np.ndarray
@@ -958,7 +992,8 @@ class MainWindow(QtWidgets.QMainWindow):
         """Clean up worker and capture threads when the window closes."""
         print("[INFO] Shutting down...")
 
-        self.stop_event.set()
+        if hasattr(self, "stop_event"):
+            self.stop_event.set()
 
         self._stop_capture_threads()
         self._stop_worker_threads()

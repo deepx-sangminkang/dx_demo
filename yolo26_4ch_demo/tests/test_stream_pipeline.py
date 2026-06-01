@@ -93,3 +93,40 @@ def test_on_new_sample_swallows_callback_errors():
     # Must not raise out of the GStreamer callback.
     ret = pipe._on_new_sample(appsink_with_sample=object())
     assert ret == _FlowReturn.OK
+
+
+def _make_pipe(channel_id=0, error_callback=None):
+    return sp.StreamPipeline(
+        channel_id=channel_id,
+        pipeline_str="x",
+        bridge=_FakeBridge(np.zeros((0, 6), dtype=np.float32)),
+        frame_callback=lambda ch, f: None,
+        detection_callback=lambda ch, d: None,
+        gst=_FakeGst,
+        sample_extractor=lambda sample: (None, None),
+        error_callback=error_callback,
+    )
+
+
+def test_format_bus_error_includes_channel_source_and_debug():
+    pipe = _make_pipe(channel_id=2)
+    text = pipe._format_bus_error("dxinfer0", "could not load model", "gstdxinfer.c(120)")
+    assert "Channel 2" in text
+    assert "dxinfer0" in text
+    assert "could not load model" in text
+    assert "gstdxinfer.c(120)" in text
+
+
+def test_dispatch_bus_error_invokes_error_callback():
+    seen = []
+    pipe = _make_pipe(channel_id=5, error_callback=lambda ch, msg: seen.append((ch, msg)))
+    pipe._dispatch_bus_error("dxpostprocess0", "lib not found", None)
+    assert len(seen) == 1
+    assert seen[0][0] == 5
+    assert "lib not found" in seen[0][1]
+
+
+def test_dispatch_bus_error_without_callback_does_not_raise():
+    pipe = _make_pipe(channel_id=0, error_callback=None)
+    # Should log/print but never raise even with no callback wired.
+    pipe._dispatch_bus_error("src", "boom", "dbg")
