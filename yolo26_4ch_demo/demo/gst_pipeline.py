@@ -341,8 +341,16 @@ def build_gst_pipeline(
 
     if source_type == "video":
         decoder = _decoder_chain(platform, rga_convert, chain_scale)
+        # Container files (mp4/mov) usually carry an audio track. parsebin
+        # exposes it as a second source pad; if left unlinked, parsebin's shared
+        # multiqueue fills and stalls the video branch too, so the decoder never
+        # prerolls (the pipeline opens but yields no frames). Route the video
+        # stream to the decoder by caps and drain any extra (audio) stream to a
+        # fakesink so the multiqueue keeps flowing.
         return (
-            f"filesrc location={source} ! parsebin ! {decoder} ! {tail}"
+            f"filesrc location={source} ! parsebin name=dxsrc "
+            f"dxsrc. ! {decoder} ! {tail} "
+            f"dxsrc. ! queue ! fakesink async=false sync=false"
         )
 
     if source_type == "rtsp":

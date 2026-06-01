@@ -85,6 +85,27 @@ def test_build_video_pipeline_rk3588():
     assert pipeline.strip().endswith("appsink") or "appsink" in pipeline
 
 
+def test_build_video_pipeline_drains_audio_to_fakesink():
+    # mp4/mov files carry an audio track; parsebin exposes it as a second pad.
+    # Leaving it unlinked deadlocks parsebin's shared multiqueue (the decoder
+    # starves and never prerolls), so the extra stream must be drained to a
+    # fakesink. The video pad is routed by caps to the (video-only) decoder.
+    pipeline = gp.build_gst_pipeline(
+        source_type="video",
+        source="/data/a.mp4",
+        platform=gp.Platform.RK3588,
+        rga_convert=True,
+    )
+    assert "parsebin name=" in pipeline
+    assert "fakesink" in pipeline
+    # The audio-drain sink must not block preroll when a file has no audio.
+    assert "async=false" in pipeline
+    # Exactly one named parsebin feeding two branches (video + audio drain).
+    assert pipeline.count("parsebin") == 1
+    # The decoder still receives the (video) stream.
+    assert "mppvideodec" in pipeline
+
+
 def test_build_video_pipeline_intel():
     pipeline = gp.build_gst_pipeline(
         source_type="video",

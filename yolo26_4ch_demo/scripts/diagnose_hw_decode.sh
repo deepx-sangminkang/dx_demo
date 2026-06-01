@@ -87,7 +87,7 @@ run_stage "5) demo HW path + audio drained to fakesink (multiqueue fix)" \
     filesrc location="${VIDEO}" ! parsebin name=pb \
     pb. ! mppvideodec ! dxconvert ! video/x-raw,format=RGB ! identity eos-after=30 \
     ! appsink drop=true max-buffers=1 sync=false \
-    pb. ! queue ! fakesink sync=false
+    pb. ! queue ! fakesink async=false sync=false
 
 echo
 echo "==================================================================="
