@@ -130,21 +130,23 @@ class StreamPipeline:
 
         self._loop = GLib.MainLoop()
         if self._should_loop():
-            # Use SEGMENT looping for files: preroll in PAUSED, then issue the
-            # initial flushing SEGMENT seek so the source emits SEGMENT_DONE
-            # (instead of EOS) at the end of the clip. Looping on EOS via a
-            # flush-seek is unreliable on RK3588 (qtdemux's streaming task dies
-            # with 'Internal data stream error (-5)'); SEGMENT looping never lets
-            # the stream reach EOS, so that code path is avoided entirely.
+            # Use SEGMENT looping for files: preroll in PAUSED, then arm the
+            # SEGMENT loop so the source emits SEGMENT_DONE (instead of EOS) at
+            # the end of the clip. Looping on EOS via a flush-seek is unreliable
+            # on RK3588 (qtdemux's streaming task dies with 'Internal data stream
+            # error (-5)'); SEGMENT looping never lets the stream reach EOS, so
+            # that code path is avoided entirely.
             #
-            # Block until PAUSED preroll completes *and* until the flushing seek
-            # finishes, so the new segment event has propagated to every pad
-            # before data flows. Otherwise a still-prerolling channel emits
-            # 'Got data flow before segment event' warnings at startup.
+            # The arming seek is *non-flushing*: dxinfer pushes buffers from its
+            # own async inference thread, so a flushing seek lets in-flight
+            # buffers race ahead of the new segment event ('Got data flow before
+            # segment event' warnings from dxinfer:src downstream). A non-flush
+            # seek keeps the original start-of-stream segment valid, so no such
+            # race occurs. If the source ignores the segment request and still
+            # reaches EOS, _on_bus_eos re-arms with a flushing seek as a fallback.
             self._pipeline.set_state(self._gst.State.PAUSED)
             self._pipeline.get_state(self._gst.CLOCK_TIME_NONE)
-            self._segment_seek(flush=True)
-            self._pipeline.get_state(self._gst.CLOCK_TIME_NONE)
+            self._segment_seek(flush=False)
         self._pipeline.set_state(self._gst.State.PLAYING)
         self._thread = threading.Thread(target=self._loop.run, daemon=True)
         self._thread.start()
