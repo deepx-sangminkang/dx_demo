@@ -75,11 +75,11 @@ run_stage "2) + mppvideodec (HW decode) -> fakesink" \
 
 run_stage "3) + videoconvert -> BGR appsink (CPU colour, demo SW-ish path)" \
     filesrc location="${VIDEO}" ! parsebin ! mppvideodec ! videoconvert \
-    ! video/x-raw,format=BGR ! appsink num-buffers=30 sync=false
+    ! video/x-raw,format=BGR ! identity eos-after=30 ! appsink sync=false
 
 run_stage "4) + dxconvert -> RGB appsink (RGA colour, demo HW path)" \
     filesrc location="${VIDEO}" ! parsebin ! mppvideodec ! dxconvert \
-    ! video/x-raw,format=RGB ! appsink num-buffers=30 sync=false
+    ! video/x-raw,format=RGB ! identity eos-after=30 ! appsink sync=false
 
 echo
 echo "==================================================================="
