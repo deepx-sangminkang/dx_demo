@@ -297,7 +297,15 @@ class StreamPipeline:
     def _on_bus_eos(self, _bus, _message):  # pragma: no cover - board glue
         # File sources reach EOS at end of clip. When looping is enabled, rewind
         # to the start so the demo plays continuously; otherwise log and stop.
-        if self._handle_eos():
+        if self._should_loop():
+            from gi.repository import GLib  # type: ignore
+
+            # Defer the seek to the next main-loop iteration. Seeking directly
+            # inside the EOS handler races qtdemux's still-unwinding streaming
+            # task and yields 'Internal data stream error (-5)'; running it from
+            # an idle callback lets the EOS settle first so the flush-seek
+            # cleanly restarts data flow without tearing down decodebin.
+            GLib.idle_add(self._deferred_loop_seek)
             msg = f"Channel {self.channel_id}: end of stream -> looping"
             logger.info(msg)
             print(f"[INFO] {msg}", file=sys.stderr, flush=True)
@@ -306,24 +314,24 @@ class StreamPipeline:
         logger.info(msg)
         print(f"[INFO] {msg}", file=sys.stderr, flush=True)
 
-    def _handle_eos(self) -> bool:
-        """Restart the pipeline to loop the source. Returns True if it looped."""
+    def _deferred_loop_seek(self):  # pragma: no cover - board glue
+        try:
+            self._seek_to_start()
+        except Exception as exc:
+            logger.exception("loop seek failed (ch %s): %s", self.channel_id, exc)
+        return False  # one-shot idle source
 
-        if not self.loop or self._pipeline is None:
-            return False
-        self._restart_pipeline()
-        return True
+    def _should_loop(self) -> bool:
+        """Whether an EOS should rewind this source to play again."""
 
-    def _restart_pipeline(self) -> None:
-        """Fully reset the pipeline (NULL->PLAYING) to replay from the start.
+        return self.loop and self._pipeline is not None
 
-        A flush-seek on EOS races the qtdemux/decoder streaming task and yields
-        ``Internal data stream error (-5)``; cycling through NULL tears those
-        tasks down cleanly so playback restarts from the first frame. The
-        appsink ``new-sample`` connection and the meta-source pad probe live on
-        the elements, so they survive the state cycle.
-        """
+    def _seek_to_start(self) -> None:
+        """Flush-seek the pipeline back to the first frame to loop playback."""
 
         gst = self._gst
-        self._pipeline.set_state(gst.State.NULL)
-        self._pipeline.set_state(gst.State.PLAYING)
+        self._pipeline.seek_simple(
+            gst.Format.TIME,
+            gst.SeekFlags.FLUSH | gst.SeekFlags.KEY_UNIT,
+            0,
+        )

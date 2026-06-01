@@ -257,49 +257,56 @@ def test_on_new_sample_falls_back_to_bridge_without_stash():
     np.testing.assert_array_equal(dets[0], det)
     assert bridge.seen_buffer is appsink_buf
 
-class _State:
-    NULL = "null"
-    PLAYING = "playing"
+class _SeekFlags:
+    FLUSH = 1
+    KEY_UNIT = 2
 
 
-class _RestartGst:
+class _Format:
+    TIME = "time"
+
+
+class _SeekGst:
     FlowReturn = _FlowReturn
-    State = _State
+    SeekFlags = _SeekFlags
+    Format = _Format
 
 
 class _FakePipeline:
     def __init__(self):
-        self.states = []
+        self.seeks = []
 
-    def set_state(self, state):
-        self.states.append(state)
+    def seek_simple(self, fmt, flags, pos):
+        self.seeks.append((fmt, flags, pos))
         return True
 
 
-def test_handle_eos_loops_when_enabled():
+def test_should_loop_true_when_enabled_with_pipeline():
     pipe = _make_pipe()
-    pipe._gst = _RestartGst
     pipe.loop = True
     pipe._pipeline = _FakePipeline()
-
-    assert pipe._handle_eos() is True
-    # Looping restarts the pipeline (NULL then PLAYING) so qtdemux/decoder
-    # streaming tasks are cleanly reset instead of seek-racing into -5 errors.
-    assert pipe._pipeline.states == [_State.NULL, _State.PLAYING]
+    assert pipe._should_loop() is True
 
 
-def test_handle_eos_does_not_loop_when_disabled():
+def test_should_loop_false_when_disabled():
     pipe = _make_pipe()
-    pipe._gst = _RestartGst
     pipe.loop = False
     pipe._pipeline = _FakePipeline()
-
-    assert pipe._handle_eos() is False
-    assert pipe._pipeline.states == []
+    assert pipe._should_loop() is False
 
 
-def test_handle_eos_noop_without_pipeline():
+def test_should_loop_false_without_pipeline():
     pipe = _make_pipe()
     pipe.loop = True
     pipe._pipeline = None
-    assert pipe._handle_eos() is False
+    assert pipe._should_loop() is False
+
+
+def test_seek_to_start_issues_flush_seek():
+    pipe = _make_pipe()
+    pipe._gst = _SeekGst
+    pipe._pipeline = _FakePipeline()
+    pipe._seek_to_start()
+    assert pipe._pipeline.seeks == [
+        (_Format.TIME, _SeekFlags.FLUSH | _SeekFlags.KEY_UNIT, 0)
+    ]
