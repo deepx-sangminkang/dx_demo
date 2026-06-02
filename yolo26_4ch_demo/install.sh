@@ -8,15 +8,14 @@ DXSTREAM_ARGS=()
 for arg in "$@"; do
     case "$arg" in
         --with-dxstream) WITH_DXSTREAM=1 ;;
-        --dxstream-skip-deps) DXSTREAM_ARGS+=("--skip-deps") ;;
-        --dxstream-prefix=*) DXSTREAM_ARGS+=("--prefix=${arg#*=}") ;;
+        --dxstream-runtime-dir=*) DXSTREAM_ARGS+=("--runtime-dir=${arg#*=}") ;;
         --help|-h)
-            echo "Usage: ./install.sh [--with-dxstream] [--dxstream-skip-deps] [--dxstream-prefix=PATH]"
+            echo "Usage: ./install.sh [--with-dxstream] [--dxstream-runtime-dir=PATH]"
             echo ""
-            echo "  --with-dxstream         Also build the vendored dxstream GStreamer"
-            echo "                          plugin + pydxs required by the dxstream backend."
-            echo "  --dxstream-skip-deps    Pass --skip-deps to the vendored dxstream build."
-            echo "  --dxstream-prefix=PATH  Install the plugin to PATH (default: in-tree)."
+            echo "  --with-dxstream            Also install the dx_stream GStreamer plugin"
+            echo "                             + pydxs required by the dxstream backend, via"
+            echo "                             the dx-runtime installer (--target=dx_stream)."
+            echo "  --dxstream-runtime-dir=PATH  Path to a dx-runtime checkout."
             echo ""
             echo "Without --with-dxstream only the Python (legacy backend) demo is installed."
             exit 0
@@ -35,12 +34,13 @@ echo "[INFO] Downloading sample videos..."
 ./setup.sh
 
 if [ "$WITH_DXSTREAM" -eq 1 ]; then
-    echo "[INFO] Building vendored dxstream backend (plugin + pydxs)..."
-    ./scripts/build_vendored_dxstream.sh "${DXSTREAM_ARGS[@]}"
+    echo "[INFO] Installing dxstream backend (dx_stream plugin + pydxs) via dx-runtime..."
+    ./scripts/install_dxstream.sh "${DXSTREAM_ARGS[@]}"
 else
-    echo "[INFO] Skipping dxstream build (legacy backend only)."
-    echo "[HINT] The dxstream backend (engine_backend: dxstream) needs the vendored plugin."
-    echo "[HINT] Re-run with: ./install.sh --with-dxstream  (or ./scripts/build_vendored_dxstream.sh)"
+    echo "[INFO] Skipping dxstream install (legacy backend only)."
+    echo "[HINT] The dxstream backend (engine_backend: dxstream) needs the dx_stream plugin."
+    echo "[HINT] Install it via dx-runtime: ./install.sh --with-dxstream"
+    echo "[HINT]   (or, directly: <dx-runtime>/install.sh --target=dx_stream)"
 fi
 
 echo "[INFO] Installation complete."

@@ -16,7 +16,6 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import cv2
 import numpy as np
-from dx_engine import Configuration, InferenceEngine
 from packaging import version
 
 COCO80_CLASSES = [
@@ -61,6 +60,11 @@ class YOLO26Engine:
     """
 
     def __init__(self, model_path: str) -> None:
+        # dx_engine (DX-RT Python module) is only needed for the legacy backend.
+        # Import it lazily so the dxstream backend (which uses NativeDisplayMeta
+        # and runs inference in the native dxinfer element) does not require it.
+        from dx_engine import Configuration, InferenceEngine
+
         # DX-RT version check (can be moved to main to run once if needed)
         config = Configuration()
         if version.parse(config.get_version()) < version.parse("3.0.0"):
