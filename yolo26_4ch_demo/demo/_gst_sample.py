@@ -11,9 +11,59 @@ geometry and format. We return:
 
 from __future__ import annotations
 
+import re
 from typing import Optional, Tuple
 
 import numpy as np
+
+
+_CAPS_INT_RE = {
+    "width": re.compile(r"width=\(int\)(\d+)"),
+    "height": re.compile(r"height=\(int\)(\d+)"),
+}
+_CAPS_FORMAT_RE = re.compile(r"format=\(string\)([A-Za-z0-9_]+)")
+
+
+def _structure_int(structure, caps, key):
+    """Read an int field, falling back to parsing the caps string.
+
+    ``Structure.get_int`` is a plain GIR method and normally works, but if the
+    structure comes from a foreign GI registry (e.g. the dxstream native display
+    path) the bound method can raise ``TypeError``. Parsing ``caps.to_string()``
+    sidesteps the per-method ``isinstance`` checks entirely.
+    """
+    try:
+        ok, value = structure.get_int(key)
+        if ok:
+            return value
+    except Exception:  # noqa: BLE001 - any GI binding mismatch
+        pass
+    try:
+        match = _CAPS_INT_RE[key].search(caps.to_string() or "")
+    except Exception:  # noqa: BLE001
+        return None
+    return int(match.group(1)) if match else None
+
+
+def _structure_format(structure, caps):
+    """Read the ``format`` field, falling back to parsing the caps string.
+
+    ``Structure.get_string`` is overridden by PyGObject with a strict
+    ``isinstance(self, Gst.Structure)`` guard; a structure from a foreign GI
+    registry trips it with ``Expected Gst.Structure, but got
+    gi.repository.Gst.Structure``. Parse the caps string in that case.
+    """
+    try:
+        fmt = structure.get_string("format")
+        if fmt:
+            return fmt
+    except Exception:  # noqa: BLE001 - any GI binding mismatch
+        pass
+    try:
+        match = _CAPS_FORMAT_RE.search(caps.to_string() or "")
+    except Exception:  # noqa: BLE001
+        return None
+    return match.group(1) if match else None
 
 
 def extract_frame_and_buffer(
@@ -39,12 +89,12 @@ def extract_frame_and_buffer(
     if structure is None:
         return None, buffer
 
-    ok_w, width = structure.get_int("width")
-    ok_h, height = structure.get_int("height")
-    if not (ok_w and ok_h):
+    width = _structure_int(structure, caps, "width")
+    height = _structure_int(structure, caps, "height")
+    if width is None or height is None:
         return None, buffer
 
-    fmt = structure.get_string("format") or "RGB"
+    fmt = _structure_format(structure, caps) or "RGB"
     if fmt not in ("RGB", "BGR"):
         # The pipeline pins format=RGB before the appsink; anything else means
         # the convert element was dropped. Skip rather than misinterpret bytes.
