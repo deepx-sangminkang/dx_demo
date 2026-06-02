@@ -13,10 +13,10 @@ for arg in "$@"; do
         --help|-h)
             echo "Usage: ./install.sh [--with-dxstream] [--dxstream-skip-deps] [--dxstream-prefix=PATH]"
             echo ""
-            echo "  --with-dxstream         Also build & install dx_stream (GStreamer plugins"
-            echo "                          + pydxs) required by the dxstream inference backend."
-            echo "  --dxstream-skip-deps    Pass --skip-deps to the dx_stream installer."
-            echo "  --dxstream-prefix=PATH  Install dx_stream to PATH (default /usr/local)."
+            echo "  --with-dxstream         Also build the vendored dxstream GStreamer"
+            echo "                          plugin + pydxs required by the dxstream backend."
+            echo "  --dxstream-skip-deps    Pass --skip-deps to the vendored dxstream build."
+            echo "  --dxstream-prefix=PATH  Install the plugin to PATH (default: in-tree)."
             echo ""
             echo "Without --with-dxstream only the Python (legacy backend) demo is installed."
             exit 0
@@ -35,12 +35,12 @@ echo "[INFO] Downloading sample videos..."
 ./setup.sh
 
 if [ "$WITH_DXSTREAM" -eq 1 ]; then
-    echo "[INFO] Installing dx_stream (dxstream backend requirements)..."
-    ./scripts/install_dxstream.sh "${DXSTREAM_ARGS[@]}"
+    echo "[INFO] Building vendored dxstream backend (plugin + pydxs)..."
+    ./scripts/build_vendored_dxstream.sh "${DXSTREAM_ARGS[@]}"
 else
-    echo "[INFO] Skipping dx_stream install (legacy backend only)."
-    echo "[HINT] The dxstream backend (engine_backend: dxstream) requires dx_stream."
-    echo "[HINT] Re-run with: ./install.sh --with-dxstream  (or ./scripts/install_dxstream.sh)"
+    echo "[INFO] Skipping dxstream build (legacy backend only)."
+    echo "[HINT] The dxstream backend (engine_backend: dxstream) needs the vendored plugin."
+    echo "[HINT] Re-run with: ./install.sh --with-dxstream  (or ./scripts/build_vendored_dxstream.sh)"
 fi
 
 echo "[INFO] Installation complete."

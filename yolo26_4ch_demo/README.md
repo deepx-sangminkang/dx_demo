@@ -40,29 +40,34 @@ To install manually without running the demo:
 ./install.sh
 ```
 
-### Installing the `dxstream` backend (dx_stream)
+### Installing the `dxstream` backend (vendored dx_stream)
 
 The default install covers the **legacy** backend only. The native
 [`dxstream`](#inference-backend-engine_backend) backend additionally needs the
-dx_stream GStreamer plugins and the `pydxs` Python bindings. Install them with:
+dx_stream GStreamer plugin and the `pydxs` Python bindings. These are **vendored
+in-tree** under `third_party/dxstream/` — no separate `dx_stream` checkout is
+required. Build them with:
 
 ```bash
-./install.sh --with-dxstream          # full demo + dx_stream
+./install.sh --with-dxstream          # full demo + vendored dxstream build
 # or, standalone (idempotent):
-./scripts/install_dxstream.sh
+./scripts/build_vendored_dxstream.sh  # (install_dxstream.sh forwards here)
 ```
 
-`install_dxstream.sh`:
-- Skips the build if dx_stream + `pydxs` are already installed (`--force` to rebuild).
-- Locates the dx_stream source via `$DX_STREAM_SRC`, common sibling paths, or
-  clones it from `$DX_STREAM_REPO` (default `git@github.com:DEEPX-AI/dx_stream`).
-- Runs dx_stream's `install.sh` (system deps) and `build.sh` (plugin + `pydxs`).
-  Pass `--dxstream-skip-deps` / `--skip-deps` to skip the system-dependency step.
+`build_vendored_dxstream.sh`:
+- Builds only the elements the demo uses (`dxpreprocess` / `dxinfer` /
+  `dxpostprocess` / `dxscale`) plus the metadata `pydxs` reads, from the vendored
+  sources — so no `git clone` of dx_stream and no `rdkafka`/`libmosquitto`/`eigen3`.
+- Skips the build if the plugin + `pydxs` are already available (`--force` to rebuild).
+- Installs the plugin locally into `third_party/dxstream/install` by default (no
+  `sudo`); override with `--prefix=PATH`. Pass `--skip-deps` to skip the
+  best-effort apt install of build tools.
 - Writes `scripts/.dxstream_env.sh`, which `run_demo.sh` sources automatically so
   the plugin is discoverable without editing `~/.bashrc`.
 
-> dx_stream links against **DX-RT** (`dx_engine`), so the same prerequisite above
-> must be satisfied before building it.
+> The vendored plugin still links against **DX-RT** (`dx_engine`), GStreamer,
+> OpenCV, json-glib and libyuv (plus `librga` on RK3588). These remain system
+> prerequisites — only the separate dx_stream packaging step is removed.
 
 ## Configuration
 
