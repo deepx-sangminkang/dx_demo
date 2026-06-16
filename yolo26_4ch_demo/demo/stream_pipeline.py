@@ -91,6 +91,9 @@ class StreamPipeline:
         self._pace_last_pts: Optional[int] = None
         # Cap a single pacing sleep so a bad/huge PTS gap can never freeze a tile.
         self._PACE_MAX_SLEEP = 0.5
+        # Set by begin_stop(): makes the streaming thread stop pacing-sleeping so
+        # it can exit promptly during shutdown instead of holding up the join.
+        self._stopping = False
 
         self._gst = gst
         self._extract = sample_extractor
@@ -201,12 +204,29 @@ class StreamPipeline:
         self._thread.start()
 
     def stop(self) -> None:  # pragma: no cover - requires GStreamer runtime
+        """Stop the pipeline and wait for its loop thread to finish."""
+        self.begin_stop()
+        self.join_stop()
+
+    def begin_stop(self) -> None:  # pragma: no cover - requires GStreamer runtime
+        """Request shutdown without blocking on the loop thread.
+
+        Issuing the NULL transition + loop quit for every channel first (then
+        joining separately) lets the four pipelines tear down concurrently
+        instead of serialising several seconds of NPU/VPU teardown on the GUI
+        thread, which is what made closing the window feel hung (and risked the
+        window manager force-killing the app).
+        """
+        self._stopping = True
         if self._pipeline is not None:
             self._pipeline.set_state(self._gst.State.NULL)
         if self._loop is not None:
             self._loop.quit()
+
+    def join_stop(self, timeout: float = 2.0) -> None:  # pragma: no cover - requires GStreamer runtime
+        """Wait for the loop thread to exit (call after :meth:`begin_stop`)."""
         if self._thread is not None:
-            self._thread.join(timeout=2.0)
+            self._thread.join(timeout=timeout)
 
     # ----- sample handling (host-testable) -----
 
@@ -260,7 +280,7 @@ class StreamPipeline:
         """
 
         pts = self._buffer_pts(gst_buffer)
-        if pts is None:
+        if pts is None or self._stopping:
             return
         now = self._monotonic()
         if (self._pace_anchor_wall is None

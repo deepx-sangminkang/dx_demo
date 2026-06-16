@@ -337,10 +337,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self._latest_meta: Dict[int, Dict[str, Any]] = {}
         self._latest_lock = threading.Lock()
 
+        # Set once the window starts closing so GStreamer-thread callbacks stop
+        # touching widgets that are being torn down (avoids crashes during exit).
+        self._shutting_down = False
+
         # Timer for periodic screen refresh (approx. 30 FPS)
         self._paint_timer = QtCore.QTimer(self)
         self._paint_timer.timeout.connect(self._on_paint_timer)
         self._paint_timer.start(33)  # 33ms interval ≒ 30 FPS
+
+        # Quit on Q or Esc from anywhere in the window (a focused child widget can
+        # otherwise swallow the key event before keyPressEvent sees it).
+        for _key in (QtCore.Qt.Key_Q, QtCore.Qt.Key_Escape):
+            _sc = QtGui.QShortcut(QtGui.QKeySequence(_key), self)
+            _sc.setContext(QtCore.Qt.ApplicationShortcut)
+            _sc.activated.connect(self.close)
 
         # Build central 2x2 grid layout
         central = QtWidgets.QWidget(self)
@@ -829,6 +840,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_native_frame(self, channel_id: int, frame: np.ndarray) -> None:
         """GStreamer-thread callback: forward a decoded frame to the Qt display."""
 
+        if getattr(self, "_shutting_down", False):
+            return
         if getattr(self, "_native_fps_t0", None) is None:
             self._native_fps_t0 = time.time()
         self._native_frame_count = getattr(self, "_native_frame_count", 0) + 1
@@ -840,6 +853,8 @@ class MainWindow(QtWidgets.QMainWindow):
     ) -> None:
         """GStreamer-thread callback: original detection-space resolution found."""
 
+        if getattr(self, "_shutting_down", False):
+            return
         self.source_size_ready.emit(channel_id, width, height)
 
     @QtCore.Slot(int, int, int)
@@ -870,6 +885,8 @@ class MainWindow(QtWidgets.QMainWindow):
     ) -> None:
         """GStreamer-thread callback: filter + forward detections to the overlay."""
 
+        if getattr(self, "_shutting_down", False):
+            return
         detections = filter_by_classes(detections, self.get_selected_classes())
         ch, out_det, meta = native_signal.build_detection_payload(
             channel_id, detections
@@ -938,13 +955,25 @@ class MainWindow(QtWidgets.QMainWindow):
     # ----- Shutdown -----
 
     def _stop_stream_pipelines(self) -> None:
-        """Request the native dx_stream pipelines to stop."""
+        """Stop all native dx_stream pipelines promptly and safely.
 
-        for pipe in getattr(self, "stream_pipelines", []):
+        The NULL transition + loop quit is requested for every channel first, so
+        the four pipelines tear down concurrently instead of serialising several
+        seconds of NPU/VPU teardown; only then do we join their threads. This
+        keeps window-close responsive and avoids the OS force-killing the app.
+        """
+
+        pipes = list(getattr(self, "stream_pipelines", []))
+        for pipe in pipes:
             try:
-                pipe.stop()
+                pipe.begin_stop()
             except Exception as exc:  # pragma: no cover - board glue
-                print(f"[WARN] stream pipeline stop failed: {exc}")
+                print(f"[WARN] stream pipeline begin_stop failed: {exc}")
+        for pipe in pipes:
+            try:
+                pipe.join_stop()
+            except Exception as exc:  # pragma: no cover - board glue
+                print(f"[WARN] stream pipeline join_stop failed: {exc}")
 
     def _cleanup_engine(self) -> None:
         """Release the display-metadata engine if it was created."""
@@ -952,9 +981,26 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "engine") and self.engine:
             del self.engine
 
+    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:  # pragma: no cover
+        """Quit the demo when the user presses Q or Esc."""
+
+        if event.key() in (QtCore.Qt.Key_Q, QtCore.Qt.Key_Escape):
+            self.close()
+            return
+        super().keyPressEvent(event)
+
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # pragma: no cover
         """Clean up the native pipelines when the window closes."""
+
+        if self._shutting_down:
+            event.accept()
+            return
+        self._shutting_down = True
         print("[INFO] Shutting down...")
+
+        # Stop repainting first so the GUI thread isn't fighting the teardown.
+        if hasattr(self, "_paint_timer"):
+            self._paint_timer.stop()
 
         self._stop_stream_pipelines()
         self._cleanup_engine()

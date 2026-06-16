@@ -555,3 +555,68 @@ def test_pace_ignores_invalid_pts():
     pipe._pace(_FakeBuf(pts=pipe._gst.CLOCK_TIME_NONE))
     assert sleeps == []
     assert pipe._pace_anchor_wall is None
+
+
+# ----- shutdown (begin_stop / join_stop) -----
+
+
+class _FakeState:
+    NULL = "NULL"
+
+
+class _FakePipelineState:
+    def __init__(self):
+        self.state = None
+
+    def set_state(self, s):
+        self.state = s
+
+
+class _FakeLoop:
+    def __init__(self):
+        self.quit_called = False
+
+    def quit(self):
+        self.quit_called = True
+
+
+class _FakeThread:
+    def __init__(self):
+        self.joined_with = None
+
+    def join(self, timeout=None):
+        self.joined_with = timeout
+
+
+def _stoppable_pipe():
+    pipe = _pace_pipe({"t": 0.0}, [])
+    pipe._gst.State = _FakeState
+    pipe._pipeline = _FakePipelineState()
+    pipe._loop = _FakeLoop()
+    pipe._thread = _FakeThread()
+    return pipe
+
+
+def test_begin_stop_requests_null_and_quit_without_joining():
+    pipe = _stoppable_pipe()
+    pipe.begin_stop()
+    assert pipe._stopping is True
+    assert pipe._pipeline.state == _FakeState.NULL
+    assert pipe._loop.quit_called is True
+    assert pipe._thread.joined_with is None  # join deferred to join_stop
+
+
+def test_join_stop_joins_loop_thread():
+    pipe = _stoppable_pipe()
+    pipe.begin_stop()
+    pipe.join_stop(timeout=1.5)
+    assert pipe._thread.joined_with == 1.5
+
+
+def test_pace_bails_out_while_stopping():
+    clock, sleeps = {"t": 1000.0}, []
+    pipe = _pace_pipe(clock, sleeps)
+    pipe._pace(_FakeBuf(pts=0))               # set the anchor
+    pipe._stopping = True
+    pipe._pace(_FakeBuf(pts=10_000_000_000))  # huge future PTS, but stopping
+    assert sleeps == []                       # must not sleep during shutdown
