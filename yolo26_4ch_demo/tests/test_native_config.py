@@ -8,8 +8,8 @@ from demo import native_config as nc
 from demo import native_pipeline as npl
 
 
-def test_default_backend_is_legacy():
-    assert nc.get_engine_backend({}) == "legacy"
+def test_default_backend_is_dxstream():
+    assert nc.get_engine_backend({}) == "dxstream"
 
 
 def test_backend_dxstream_selected():
@@ -19,6 +19,11 @@ def test_backend_dxstream_selected():
 def test_backend_invalid_raises():
     with pytest.raises(ValueError):
         nc.get_engine_backend({"engine_backend": "wat"})
+
+
+def test_legacy_backend_rejected():
+    with pytest.raises(ValueError):
+        nc.get_engine_backend({"engine_backend": "legacy"})
 
 
 def test_build_native_cfgs_defaults():

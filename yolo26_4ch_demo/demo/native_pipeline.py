@@ -13,9 +13,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Tuple, Union
 
-# Keep only the newest decoded sample, never block, ignore the clock, and
-# emit ``new-sample`` so the Python side can pull frames + metadata.
-_APPSINK_OPTS = "drop=true max-buffers=1 sync=false emit-signals=true"
+# Keep only the newest decoded sample, never block, and emit ``new-sample`` so
+# the Python side can pull frames + metadata. ``sync`` is parameterised: with
+# ``sync=false`` the appsink delivers frames as fast as the pipeline produces
+# them (max throughput); with ``sync=true`` it presents buffers at their PTS so
+# playback is paced to the source's native frame rate (smooth, no wasted NPU/VPU
+# work decoding faster than the video's real fps).
+_APPSINK_BASE_OPTS = "drop=true max-buffers=1 emit-signals=true"
+
+
+def _appsink_opts(sync: bool) -> str:
+    return f"{_APPSINK_BASE_OPTS} sync={'true' if sync else 'false'}"
+
+
+# Valid NV12->RGB colour-conversion backends for the display branch.
+#   "cpu" : software ``videoconvert`` (works everywhere).
+#   "rga" : RK3588 RGA ``dxconvert`` (offloads the conversion to hardware).
+_COLOR_CONVERT_ELEMENTS = {"cpu": "videoconvert", "rga": "dxconvert"}
 
 
 @dataclass
@@ -90,12 +104,21 @@ def _postprocess_element(cfg: PostprocessCfg) -> str:
 
 
 def _source_chain(source_type: str, source: Union[int, str]) -> str:
+    # A ``video/x-raw`` capsfilter is pinned right after ``decodebin`` so only
+    # the decoded *video* pad is linked downstream. Many clips also carry audio
+    # (AAC) or data (timecode) tracks; without this filter decodebin's auto
+    # linker can grab whichever pad prerolls first, and any non-video pad it
+    # exposes is left unlinked. Under the 4-channel VPU contention on RK3588 an
+    # unlinked demuxer pad returns GST_FLOW_NOT_LINKED during the gapless loop
+    # seek, which qtdemux reports as "Internal data stream error (-5)" and wedges
+    # the tile. Filtering to video keeps looping robust (and HW decode intact,
+    # since decodebin still selects mppvideodec to produce video/x-raw).
     if source_type == "video":
-        return f"filesrc location={source} ! decodebin"
+        return f"filesrc location={source} ! decodebin ! video/x-raw"
     if source_type == "rtsp":
         return (
             f"rtspsrc location={source} latency=100 ! "
-            f"rtph264depay ! h264parse ! decodebin"
+            f"rtph264depay ! h264parse ! decodebin ! video/x-raw"
         )
     if source_type == "camera":
         text = str(source)
@@ -105,13 +128,14 @@ def _source_chain(source_type: str, source: Union[int, str]) -> str:
 
 
 def meta_source_name(appsink_name: str) -> str:
-    """Name of the element whose src pad still carries the DXFrameMeta.
+    """Name of the element (``dxpostprocess``) whose src pad carries DXFrameMeta.
 
-    The detection metadata that ``dxpostprocess`` (or ``dxscale``) attaches lives
-    on the *decoder-native* buffer; the downstream ``videoconvert`` (NV12->RGB)
-    allocates a new buffer that does not carry the custom meta, so the meta must
-    be read on this element's src pad (before ``videoconvert``) and correlated to
-    the appsink frame by buffer PTS.
+    The detection metadata that ``dxpostprocess`` attaches lives on the
+    decoder-native buffer; the downstream colour convert (NV12->RGB) allocates a
+    new buffer that does not carry the custom meta, so the meta must be read on
+    ``dxpostprocess``'s src pad (before any display ``dxscale`` and the convert)
+    and correlated to the appsink frame by buffer PTS. Reading it here also keeps
+    detections in the original decoded-frame coordinate space.
     """
 
     return f"dxmeta_{appsink_name}"
@@ -125,13 +149,29 @@ def build_infer_pipeline(
     postprocess_cfg: PostprocessCfg,
     appsink_name: str,
     display_size: Optional[Tuple[int, int]] = None,
+    color_convert: str = "cpu",
+    sync: bool = False,
 ) -> str:
     """Build a full inference GStreamer launch string ending in an appsink.
 
-    ``display_size`` adds an RGA ``dxscale`` on the *display* branch (after
-    postprocess); detections stay in original-frame coordinates because
-    ``dxpostprocess`` already removes the letterbox.
+    ``display_size`` adds an RGA ``dxscale`` on the *display* branch (after the
+    detection probe) to downscale only the frame delivered to Qt; detection
+    coordinates are unaffected because they are read upstream of ``dxscale`` and
+    ``dxpostprocess`` already removes the letterbox (original-frame coords).
+
+    ``color_convert`` selects the NV12->RGB backend: ``"cpu"`` (software
+    ``videoconvert``) or ``"rga"`` (RK3588 ``dxconvert``, offloaded to RGA HW).
+
+    ``sync`` controls the appsink clock sync: ``False`` runs at max throughput,
+    ``True`` paces output to the source's native frame rate (smooth playback).
     """
+
+    if color_convert not in _COLOR_CONVERT_ELEMENTS:
+        raise ValueError(
+            f"color_convert must be one of {tuple(_COLOR_CONVERT_ELEMENTS)}, "
+            f"got {color_convert!r}"
+        )
+    convert_element = _COLOR_CONVERT_ELEMENTS[color_convert]
 
     q = "queue max-size-buffers=1"
     src = _source_chain(source_type, source)
@@ -139,22 +179,24 @@ def build_infer_pipeline(
     inf = _infer_element(infer_cfg, preprocess_cfg.preprocess_id)
     post = _postprocess_element(postprocess_cfg)
 
-    # Name the last metadata-bearing element before videoconvert so its src pad
-    # can be probed for detections (which do not survive the NV12->RGB convert).
+    # Detections are always probed on the dxpostprocess src pad so they remain
+    # in the *original* decoded-frame coordinate space (and the original frame
+    # size can be read from this pad's caps). Any display ``dxscale`` is inserted
+    # strictly downstream and only resizes the displayed pixels, never the
+    # metadata coordinates.
     meta_name = meta_source_name(appsink_name)
+    post = f"{post} name={meta_name}"
+    tail = ""
     if display_size is not None:
         w, h = display_size
-        tail = f" ! {q} ! dxscale width={w} height={h} name={meta_name}"
-    else:
-        post = f"{post} name={meta_name}"
-        tail = ""
+        tail += f" ! {q} ! dxscale width={w} height={h}"
 
-    # dxpostprocess only attaches metadata; the buffer pixels are still the
-    # decoder's native format (NV12/I420). Convert to RGB with explicit caps so
-    # the appsink delivers deterministic 3-channel frames for the Qt display.
-    tail += " ! videoconvert ! video/x-raw,format=RGB"
+    # dxpostprocess/dxscale only attach metadata or resize; the buffer pixels are
+    # still the decoder's native format (NV12/I420). Convert to RGB with explicit
+    # caps so the appsink delivers deterministic 3-channel frames for Qt.
+    tail += f" ! {convert_element} ! video/x-raw,format=RGB"
 
     return (
         f"{src} ! {q} ! {pre} ! {q} ! {inf} ! {q} ! {post}{tail} ! {q} ! "
-        f"appsink name={appsink_name} {_APPSINK_OPTS}"
+        f"appsink name={appsink_name} {_appsink_opts(sync)}"
     )

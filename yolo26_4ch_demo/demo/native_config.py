@@ -9,15 +9,21 @@ from typing import Any, Dict, Tuple
 
 from .native_pipeline import InferCfg, PostprocessCfg, PreprocessCfg
 
-_VALID_BACKENDS = ("legacy", "dxstream")
+_VALID_BACKENDS = ("dxstream",)
 
 
 def get_engine_backend(config: Dict[str, Any]) -> str:
-    """Return the selected inference backend ('legacy' or 'dxstream')."""
-    backend = str(config.get("engine_backend", "legacy"))
+    """Return the selected inference backend.
+
+    The demo is dx_stream-only; ``dxstream`` is the sole valid value and the
+    default. The key is still validated so a stale ``legacy`` config fails
+    loudly instead of silently doing nothing.
+    """
+    backend = str(config.get("engine_backend", "dxstream"))
     if backend not in _VALID_BACKENDS:
         raise ValueError(
-            f"engine_backend must be one of {_VALID_BACKENDS}, got {backend!r}"
+            f"engine_backend must be one of {_VALID_BACKENDS}, got {backend!r}. "
+            "The legacy OpenCV backend has been removed; use 'dxstream'."
         )
     return backend
 

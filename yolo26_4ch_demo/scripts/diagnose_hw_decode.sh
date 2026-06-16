@@ -4,8 +4,8 @@
 # The demo builds (on RK3588 with the dx_stream plugin present):
 #   filesrc ! parsebin ! mppvideodec ! dxconvert ! video/x-raw,format=RGB ! appsink
 #
-# When that pipeline negotiates no caps and emits no buffer, OpenCV prints
-# "cannot query video width/height" and the channel reports
+# When that pipeline negotiates no caps and emits no buffer, the appsink
+# produces no frames and the channel reports
 # "no more frames available (EOF or error)".
 #
 # This script runs the pipeline in layers with `gst-launch-1.0 -v` so you can
@@ -98,7 +98,7 @@ echo "  - Stage 3/4 hang (PREROLLING, no NV12) but 5 works -> parsebin's"
 echo "      unused audio stream deadlocks the shared multiqueue; the fix is"
 echo "      to drain the extra pad to a fakesink (named parsebin)."
 echo "  - Stage 3 OK but 4 fails -> dxconvert (RGA) is the culprit:"
-echo "      set 'rga' off so the demo uses videoconvert (BGR) instead."
-echo "  - All stages OK -> the issue is OpenCV's appsink negotiation;"
-echo "      try decode: \"sw\" in demo/config/yolo26_multich.yaml."
+echo "      set color_convert: \"cpu\" so the demo uses videoconvert instead."
+echo "  - All stages OK -> the issue is the appsink negotiation in the demo;"
+echo "      check dx_stream/pydxs install and pipeline caps."
 echo "==================================================================="

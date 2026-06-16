@@ -55,6 +55,7 @@ class StreamPipeline:
         error_callback: Optional[ErrorCallback] = None,
         meta_src_name: Optional[str] = None,
         loop: bool = False,
+        source_size_callback: Optional[Callable[[int, int, int], None]] = None,
     ):
         self.channel_id = channel_id
         self.pipeline_str = pipeline_str
@@ -65,6 +66,12 @@ class StreamPipeline:
         self.error_callback = error_callback
         self.meta_src_name = meta_src_name
         self.loop = loop
+        # Called once (channel_id, width, height) with the original detection
+        # coordinate-space resolution, read from the meta (dxpostprocess) pad caps
+        # so the overlay can map boxes correctly even when the displayed frame is
+        # downscaled by a display-branch dxscale.
+        self.source_size_callback = source_size_callback
+        self._source_size_reported = False
         self._segment_armed = False
 
         self._gst = gst
@@ -86,11 +93,15 @@ class StreamPipeline:
         # Stall watchdog: RK3588 loop seeks occasionally wedge a single channel
         # under VPU contention (one tile freezes while the others keep playing).
         # If a looping channel produces no frames for _STALL_TIMEOUT seconds, a
-        # flushing seek is issued to kick it back into motion.
+        # flushing seek is issued to kick it back into motion. The timeout is
+        # kept short (and the watchdog polled every second) so a wedged loop is
+        # recovered in ~2s instead of producing a long, visible freeze -- at
+        # ~95 fps a genuinely-playing channel never has a 2s frame gap, so this
+        # only ever fires on a real wedge.
         self._last_sample_mono: Optional[float] = None
         self._stall_recoveries = 0
-        self._STALL_TIMEOUT = 5.0
-        self._WATCHDOG_INTERVAL = 2
+        self._STALL_TIMEOUT = 2.0
+        self._WATCHDOG_INTERVAL = 1
         self._pipeline = None
         self._loop = None
         self._thread: Optional[threading.Thread] = None
@@ -110,6 +121,15 @@ class StreamPipeline:
         self._pipeline = self._gst.parse_launch(self.pipeline_str)
         appsink = self._pipeline.get_by_name(self.appsink_name)
         appsink.connect("new-sample", self._on_new_sample_signal)
+
+        # Log which decoder ``decodebin`` actually instantiates so a silent
+        # fallback to software decoding (e.g. avdec_h264 instead of the HW
+        # mppvideodec) is visible instead of just showing high CPU usage.
+        try:
+            self._pipeline.connect("deep-element-added", self._on_deep_element_added)
+        except Exception as exc:  # pragma: no cover - board glue
+            logger.debug("deep-element-added connect failed (ch %s): %s",
+                         self.channel_id, exc)
 
         # Capture detection metadata on the meta-source src pad (before the
         # NV12->RGB videoconvert, which drops the custom DXFrameMeta). The probe
@@ -171,6 +191,22 @@ class StreamPipeline:
             self._thread.join(timeout=2.0)
 
     # ----- sample handling (host-testable) -----
+
+    def _on_deep_element_added(self, bin_, sub_bin, element):  # pragma: no cover - board glue
+        """Log the video decoder ``decodebin`` selected (HW vs SW)."""
+        try:
+            factory = element.get_factory()
+            klass = factory.get_klass() if factory is not None else ""
+            if "Decoder/Video" in (klass or ""):
+                name = factory.get_name() if factory is not None else "?"
+                hw = "HW" if "mpp" in name.lower() else "SW"
+                print(
+                    f"[INFO] Channel {self.channel_id}: video decoder = {name} "
+                    f"({hw})",
+                    flush=True,
+                )
+        except Exception as exc:
+            logger.debug("decoder-log failed (ch %s): %s", self.channel_id, exc)
 
     def _on_new_sample_signal(self, appsink):  # pragma: no cover - board glue
         sample = appsink.emit("pull-sample")
@@ -249,6 +285,7 @@ class StreamPipeline:
             buf = info.get_buffer()
             if buf is None:
                 return self._gst.PadProbeReturn.OK
+            self._maybe_report_source_size(pad)
             detections = self.bridge.detections_for_buffer(buf)
             pts = self._buffer_pts(buf)
             if pts is not None:
@@ -256,6 +293,23 @@ class StreamPipeline:
         except Exception as exc:
             logger.exception("meta probe failed (ch %s): %s", self.channel_id, exc)
         return self._gst.PadProbeReturn.OK
+
+    def _maybe_report_source_size(self, pad):  # pragma: no cover - board glue
+        """Report the original (pre-downscale) frame size once, from pad caps."""
+        if self._source_size_reported or self.source_size_callback is None:
+            return
+        try:
+            caps = pad.get_current_caps()
+            if caps is None or caps.get_size() == 0:
+                return
+            structure = caps.get_structure(0)
+            ok_w, width = structure.get_int("width")
+            ok_h, height = structure.get_int("height")
+            if ok_w and ok_h and width > 0 and height > 0:
+                self._source_size_reported = True
+                self.source_size_callback(self.channel_id, int(width), int(height))
+        except Exception as exc:
+            logger.debug("source-size probe failed (ch %s): %s", self.channel_id, exc)
 
     def _stash_meta(self, pts: int, detections) -> None:
         """Store detections for a PTS, bounding total memory used."""

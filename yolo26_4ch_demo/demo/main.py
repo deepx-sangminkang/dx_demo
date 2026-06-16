@@ -1,15 +1,16 @@
-"""YOLO26 multi-channel Qt demo skeleton.
+"""YOLO26 multi-channel Qt demo (dx_stream backend).
 
-- Per-channel capture threads + global pre/infer/draw workers + Qt GUI 2x2 layout
-- Minimal skeleton code to understand structure and flow
-- Actual exception handling / shutdown handling / detailed features to be added in later stages
+- One native dx_stream GStreamer pipeline per channel
+  (decodebin -> dxpreprocess -> dxinfer -> dxpostprocess -> appsink),
+  detections read back via pydxs, displayed in a Qt 2x2 grid.
+- Inference runs entirely on the NPU inside GStreamer; the Python side only
+  decodes display frames and draws overlays. No OpenCV dependency.
 """
 
 from __future__ import annotations
 
 import sys
 import threading
-import queue
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -20,47 +21,48 @@ _project_root = _current_file.parent.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-import cv2
 import numpy as np
 import yaml
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from demo.engine import YOLO26Engine, NativeDisplayMeta
+# QOpenGLWidget lives in a separate module and may be unavailable if the Qt
+# build lacks OpenGL support; the GPU render path degrades to CPU QPainter then.
+try:
+    from PySide6.QtOpenGLWidgets import QOpenGLWidget  # type: ignore
+
+    _OPENGL_WIDGET_AVAILABLE = True
+except Exception:  # pragma: no cover - depends on Qt build
+    QOpenGLWidget = None  # type: ignore
+    _OPENGL_WIDGET_AVAILABLE = False
+
+from demo.engine import NativeDisplayMeta
 from demo.overlay import scale_box
 from demo import native_config, native_pipeline, native_signal
-from demo.gst_pipeline import gst_element_available
+from demo import cpu_affinity
+from demo.gst_utils import gst_element_available
 from demo.meta_adapter import filter_by_classes
 from demo.pydxs_bridge import PydxsBridge
 from demo.stream_pipeline import StreamPipeline
-from demo.workers import (
-    CaptureThread,
-    preprocess_worker,
-    wait_worker,
-    detect_worker,
-    queue_drop_counts,
-    queue_drop_lock,
-    get_fps,
-    throughput_stats,
-    throughput_lock,
-)
 
 
-# ===== Simple VideoWidget =====
+# ===== Video render widget (CPU QPainter + optional Mali GPU/OpenGL) =====
 
 
-class VideoWidget(QtWidgets.QWidget):
-    """Widget that displays video for each channel.
+class _VideoRenderMixin:
+    """Shared drawing logic for the per-channel video widgets.
 
-    - set_frame(np.ndarray) only stores the latest frame;
-      actual drawing is done in paintEvent.
-    - This avoids too-frequent repaint requests from outside,
-      and allows smooth updates driven by a timer.
+    Holds the latest frame, detections and stats, and renders them with a
+    QPainter. Two concrete widgets reuse this: ``VideoWidget`` (CPU raster) and
+    ``GLVideoWidget`` (QOpenGLWidget, Mali GPU accelerated). Both call
+    ``_render`` from their paint entry point so the visuals are identical.
+
+    - set_frame(np.ndarray) only stores the latest frame; actual drawing is done
+      in the paint callback. This decouples external update frequency from the
+      timer-driven repaint, giving smooth playback.
     """
 
-    def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
-        super().__init__(parent)
+    def _init_render_state(self) -> None:
         self.setMinimumSize(320, 240)
-        self.setStyleSheet("background-color: black;")
         self._latest_frame: Optional[np.ndarray] = None
         # Colour order of the stored frame ("bgr" or "rgb").
         self._frame_color_format: str = "bgr"
@@ -70,6 +72,11 @@ class VideoWidget(QtWidgets.QWidget):
         self._detections: Optional[np.ndarray] = None
         self._overlay_classes: List[str] = []
         self._overlay_palette: Optional[np.ndarray] = None
+        # Original resolution of the detection coordinate space (the decoded
+        # frame size, before any display-branch downscale). When the displayed
+        # frame is downscaled, boxes must be mapped from this size, not from the
+        # smaller displayed-frame size. None -> fall back to the displayed size.
+        self._det_src_size: Optional[tuple] = None
         # Text overlay for per-channel statistics
         # (FPS, processed frame count, dropped frame count)
         self._stats_text: str = ""
@@ -84,6 +91,15 @@ class VideoWidget(QtWidgets.QWidget):
         """Store the latest detections (original-image coords) for overlay."""
 
         self._detections = detections
+
+    def set_detection_source_size(self, width: int, height: int) -> None:
+        """Set the original resolution the detection coordinates are expressed in.
+
+        Used to map boxes correctly when the displayed frame is downscaled.
+        """
+
+        if width > 0 and height > 0:
+            self._det_src_size = (int(width), int(height))
 
     @QtCore.Slot(np.ndarray)
     def set_frame(self, frame: np.ndarray, color_format: str = "bgr") -> None:
@@ -161,17 +177,21 @@ class VideoWidget(QtWidgets.QWidget):
             painter.setPen(QtGui.QPen(QtGui.QColor(0, 0, 0)))
             painter.drawText(int(x1) + 2, label_y, label)
 
-    def paintEvent(self, event: QtGui.QPaintEvent) -> None:  # pragma: no cover - GUI only
-        painter = QtGui.QPainter(self)
+    def _render(self, painter: QtGui.QPainter) -> None:  # pragma: no cover - GUI only
+        """Paint the latest frame, detection overlay and stats text.
+
+        Shared by both the CPU and GPU widgets. Clears to black first so the
+        letterbox margins are correct even on the OpenGL path (which has no
+        stylesheet background fill).
+        """
+
         rect = self.rect()
+        painter.fillRect(rect, QtGui.QColor(0, 0, 0))
 
         if self._latest_frame is not None:
-            # Skip the BGR->RGB conversion when the frame is already RGB
-            # (RGA dxconvert HW decode path).
-            if self._frame_color_format == "rgb":
-                frame_rgb = self._latest_frame
-            else:
-                frame_rgb = cv2.cvtColor(self._latest_frame, cv2.COLOR_BGR2RGB)
+            # dx_stream appsink always delivers RGB frames (RGA dxconvert /
+            # videoconvert pins format=RGB), so no colour conversion is needed.
+            frame_rgb = self._latest_frame
             h, w, ch = frame_rgb.shape
             bytes_per_line = ch * w
             qimg = QtGui.QImage(
@@ -181,7 +201,8 @@ class VideoWidget(QtWidgets.QWidget):
 
             # Draw scaled to widget size while preserving aspect ratio.
             # FastTransformation avoids the expensive smooth resampling so the
-            # paint timer keeps up at high refresh rates (smoother playback).
+            # paint timer keeps up at high refresh rates (smoother playback). On
+            # the GPU widget the scale/compositing runs on the Mali GPU.
             target = pix.scaled(
                 rect.size(),
                 QtCore.Qt.KeepAspectRatio,
@@ -191,14 +212,15 @@ class VideoWidget(QtWidgets.QWidget):
             y = rect.y() + (rect.height() - target.height()) // 2
             painter.drawPixmap(x, y, target)
 
-            # Overlay detection boxes/labels mapped from original-image coords
-            # onto the scaled pixmap (display-inference decoupling).
+            # Overlay detection boxes/labels mapped from the original detection
+            # coordinate space onto the scaled pixmap. When the displayed frame
+            # was downscaled, boxes are in the original (larger) resolution, so
+            # use that for the mapping; otherwise the displayed frame size is the
+            # detection space.
+            src_w, src_h = self._det_src_size if self._det_src_size else (w, h)
             self._draw_detections_overlay(
-                painter, w, h, target.width(), target.height(), x, y
+                painter, src_w, src_h, target.width(), target.height(), x, y
             )
-        else:
-            # Fill background only
-            painter.fillRect(rect, self.palette().window())
 
         # Stats text overlay on top of the video
         if self._stats_text:
@@ -221,16 +243,74 @@ class VideoWidget(QtWidgets.QWidget):
             )
 
 
+class VideoWidget(_VideoRenderMixin, QtWidgets.QWidget):
+    """CPU raster video widget (QPainter on a regular QWidget)."""
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setStyleSheet("background-color: black;")
+        self._init_render_state()
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:  # pragma: no cover - GUI only
+        painter = QtGui.QPainter(self)
+        self._render(painter)
+
+
+if _OPENGL_WIDGET_AVAILABLE:
+
+    class GLVideoWidget(_VideoRenderMixin, QOpenGLWidget):  # type: ignore[misc]
+        """Mali GPU accelerated video widget (QPainter over an OpenGL surface).
+
+        Scaling and compositing of the (already RGA-downscaled) tiles run on the
+        embedded GPU instead of the CPU raster engine.
+        """
+
+        def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
+            super().__init__(parent)
+            self._init_render_state()
+
+        def paintGL(self) -> None:  # pragma: no cover - GUI only
+            painter = QtGui.QPainter(self)
+            self._render(painter)
+
+else:  # pragma: no cover - depends on Qt build
+    GLVideoWidget = None  # type: ignore
+
+
+def create_video_widget(render_backend: str = "auto") -> "_VideoRenderMixin":
+    """Create a per-channel video widget for the requested render backend.
+
+    ``render_backend`` is one of ``auto`` (GPU if available, else CPU), ``gpu``
+    (force the OpenGL widget; falls back to CPU with a warning if unavailable)
+    or ``cpu`` (force the QPainter raster widget).
+    """
+
+    backend = (render_backend or "auto").strip().lower()
+    want_gpu = backend in ("auto", "gpu")
+    if want_gpu and _OPENGL_WIDGET_AVAILABLE and GLVideoWidget is not None:
+        try:
+            return GLVideoWidget()
+        except Exception as exc:  # pragma: no cover - GUI only
+            print(f"[render] GPU widget init failed ({exc}); using CPU renderer")
+    elif backend == "gpu":
+        print("[render] OpenGL widget unavailable; falling back to CPU renderer")
+    return VideoWidget()
+
+
 # ===== Main Window =====
 
 
 class MainWindow(QtWidgets.QMainWindow):
     frame_ready = QtCore.Signal(int, object, dict)  # channel_id, frame, meta (display path)
     detections_ready = QtCore.Signal(int, object, dict)  # channel_id, detections, meta
+    source_size_ready = QtCore.Signal(int, int, int)  # channel_id, width, height
 
     def __init__(self, config: Dict[str, Any], parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle("YOLO26 Multi-Channel Demo")
+        self.config = config
+        # Render backend for the video tiles: auto | gpu | cpu.
+        self._render_backend = str(config.get("render_backend", "auto"))
         # Set of selected class IDs (written only from GUI thread; workers read-only)
         self._selected_classes: Set[int] = set()
         self._selected_lock = threading.Lock()
@@ -247,7 +327,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._metrics_lock = threading.Lock()
 
     # Per-channel stats structure (processed frames / FPS)
-    # - dropped_* values are read directly from workers.queue_drop_counts.
         self._channel_stats: Dict[int, Dict[str, Any]] = {}
         self._channel_stats_lock = threading.Lock()
 
@@ -266,9 +345,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # Build central 2x2 grid layout
         central = QtWidgets.QWidget(self)
         grid = QtWidgets.QGridLayout(central)
-        self.video_widgets: List[VideoWidget] = []
+        self.video_widgets: List["_VideoRenderMixin"] = []
         for i in range(4):
-            w = VideoWidget()
+            w = create_video_widget(self._render_backend)
             self.video_widgets.append(w)
             row, col = divmod(i, 2)
             grid.addWidget(w, row, col)
@@ -357,6 +436,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Connect frame_ready signal to the VideoWidget update slot
         self.frame_ready.connect(self.on_frame_ready)
         self.detections_ready.connect(self.on_detections_ready)
+        self.source_size_ready.connect(self.on_source_size_ready)
 
         # Sync side button state when the dock widget visibility changes
         self.class_dock.visibilityChanged.connect(self._on_class_dock_visibility_changed)
@@ -457,7 +537,7 @@ class MainWindow(QtWidgets.QMainWindow):
             # so only accumulated stats are maintained here without separate output.
 
     def _log_throughput_summary(self) -> None:
-        """Log per-stage throughput every 10 seconds based on global throughput_stats."""
+        """Log the native dx_stream display throughput every 10 seconds."""
 
         now = time.time()
         # If no last-log timestamp yet, just initialise and return
@@ -471,45 +551,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._last_throughput_log_ts = now
 
-        # The dxstream backend bypasses the Python worker stages entirely
-        # (read/pre/inf/draw counters stay at 0), so report the native pipeline's
-        # aggregate display FPS instead of a misleading all-zero worker line.
-        if getattr(self, "engine_backend", "legacy") == "dxstream":
-            count = getattr(self, "_native_frame_count", 0)
-            t0 = getattr(self, "_native_fps_t0", None)
-            native_fps = count / (now - t0) if (t0 and now > t0) else 0.0
-            print(
-                "[THROUGHPUT] dxstream native display={:.1f} fps "
-                "(total frames={})".format(native_fps, count)
-            )
-            return
-
-        # Read throughput stats from the workers module.
-        read_fps = get_fps("read")
-        pre_fps = get_fps("pre")
-        inf_fps = get_fps("inf")
-        draw_fps = get_fps("draw")
-
-        # Overall FPS is based on frames completed in the draw stage
-        with throughput_lock:
-            draw_stats = throughput_stats["draw"]
-            d_first = draw_stats["first_ts"]
-            d_last = draw_stats["last_ts"]
-            d_count = draw_stats["count"]
-
-        if d_first is not None and d_last is not None and d_last > d_first and d_count > 0:
-            overall_fps = d_count / (d_last - d_first)
-        else:
-            overall_fps = 0.0
-
+        # Inference runs entirely inside the native pipeline; report the
+        # aggregate display FPS delivered to the Qt front end.
+        count = getattr(self, "_native_frame_count", 0)
+        t0 = getattr(self, "_native_fps_t0", None)
+        native_fps = count / (now - t0) if (t0 and now > t0) else 0.0
         print(
-            "[THROUGHPUT] read={:.1f} fps, pre={:.1f} fps, inf={:.1f} fps, draw={:.1f} fps, overall={:.1f} fps".format(
-                read_fps,
-                pre_fps,
-                inf_fps,
-                draw_fps,
-                overall_fps,
-            )
+            "[THROUGHPUT] dxstream native display={:.1f} fps "
+            "(total frames={})".format(native_fps, count)
         )
 
     # ----- Per-channel stats update -----
@@ -519,7 +568,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         - processed_frames: number of frames that actually reached the screen
         - fps: calculated from the increase in processed_frames over the last 1 second
-        - drop counts use workers.queue_drop_counts (not taken from meta)
         """
 
         now = time.perf_counter()
@@ -548,7 +596,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _get_channel_stats_snapshot(self, channel_id: int) -> str:
         """Return current per-channel stats as a compact string.
 
-    e.g. "ch1 fps=29.8 proc=1234 drop(input=10 infer=5 draw=1)"
+        e.g. "ch1 fps=29.8 proc=1234"
         """
 
         with self._channel_stats_lock:
@@ -560,17 +608,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 fps = s["fps"]
                 proc = s["processed_frames"]
 
-        # Per-queue drop counts are read directly from workers.queue_drop_counts.
-        with queue_drop_lock:
-            drop_input = queue_drop_counts["input"].get(channel_id, 0)
-            drop_infer = queue_drop_counts["infer"].get(channel_id, 0)
-            drop_draw = queue_drop_counts["draw"].get(channel_id, 0)
-
         return (
             f"ch{channel_id+1} "
             f"fps={fps:.1f} "
-            f"proc={proc} "
-                f"drop(input={drop_input} infer={drop_infer} draw={drop_draw})"
+            f"proc={proc}"
         )
 
     # ----- Class panel toggle -----
@@ -623,134 +664,13 @@ class MainWindow(QtWidgets.QMainWindow):
     # ----- Engine and worker initialisation -----
 
     def _init_engine_and_workers(self, config: Dict[str, Any]) -> None:
-        """Initialise the YOLO engine, queues, and threads (capture + global workers)."""
+        """Initialise the native dx_stream inference pipelines (one per channel)."""
 
-        # Default containers so shutdown is safe regardless of backend.
-        self.capture_threads: List[CaptureThread] = []
-        self._threads: List[threading.Thread] = []
+        # Default containers so shutdown is always safe.
         self.stream_pipelines: List[StreamPipeline] = []
 
         self.engine_backend = native_config.get_engine_backend(config)
-        if self.engine_backend == "dxstream":
-            self._init_dxstream_backend(config)
-            return
-
-        model_path = config["model"]
-        self.engine = YOLO26Engine(model_path)
-
-        # Build the filter panel using class names
-        self._build_class_filter_panel(self.engine.classes)
-
-        # Inject overlay style (class names + colour palette) into each widget so
-        # detection boxes can be drawn in paintEvent.
-        for w in self.video_widgets:
-            w.set_overlay_style(self.engine.classes, self.engine.color_palette)
-
-        # Shared queues and stop flag
-        self.input_queue: "queue.Queue[Any]" = queue.Queue(maxsize=32)
-        self.infer_queue: "queue.Queue[Any]" = queue.Queue(maxsize=32)
-        self.draw_queue: "queue.Queue[Any]" = queue.Queue(maxsize=32)
-        self.stop_event = threading.Event()
-
-        # Global decode mode (auto/hw/sw); per-channel value can override it.
-        global_decode = str(config.get("decode", "auto"))
-
-        # Optional RGA HW resize: when enabled, dxscale resizes frames to the
-        # model input size on RGA hardware so the CPU cv2.resize is skipped.
-        # Note: dxscale is a stretch resize (no aspect-ratio letterbox) and the
-        # displayed frame is also downscaled to the model size. PoC/tuning flag.
-        rga_resize = bool(config.get("rga_resize", False))
-        scale_size = (
-            (int(self.engine.input_width), int(self.engine.input_height))
-            if rga_resize
-            else None
-        )
-
-        # Create per-channel capture threads
-        self.capture_threads: List[CaptureThread] = []
-        for idx, ch_cfg in enumerate(config.get("channels", [])):
-            if not ch_cfg.get("enabled", True):
-                continue
-
-            source = ch_cfg["source"]
-            max_fps = ch_cfg.get("max_fps")
-            source_type = ch_cfg.get("type", "video")
-            decode_mode = str(ch_cfg.get("decode", global_decode))
-            t = CaptureThread(
-                channel_id=idx,
-                source=source,
-                input_queue=self.input_queue,
-                max_fps=max_fps,
-                source_type=source_type,
-                decode_mode=decode_mode,
-                display_callback=self._on_display_frame_from_capture,
-                scale_size=scale_size,
-            )
-            self.capture_threads.append(t)
-
-        # Create global worker threads (using threading.Thread)
-        self._threads: List[threading.Thread] = []
-
-        # Read per-stage worker counts from the YAML workers config.
-        workers_cfg = config.get("workers", {})
-        if not isinstance(workers_cfg, dict):
-            workers_cfg = {}
-
-        def _get_worker_count(key: str, default: int) -> int:
-            """Helper to safely read an integer value from the workers config section."""
-
-            try:
-                value = int(workers_cfg.get(key, default))
-            except (TypeError, ValueError):
-                value = default
-            # Clamp to minimum of 1 if a value less than 1 is given
-            return max(1, value)
-
-        num_pre_workers = _get_worker_count("preprocess", 1)
-        num_wait_workers = _get_worker_count("wait", 1)
-        num_draw_workers = _get_worker_count("draw", 1)
-
-        # Create preprocess worker pool
-        for i in range(num_pre_workers):
-            t_pre = threading.Thread(
-                target=preprocess_worker,
-                args=(self.engine, self.input_queue, self.infer_queue, self.stop_event),
-                daemon=True,
-                name=f"preprocess_worker_{i}",
-            )
-            self._threads.append(t_pre)
-
-        # Create wait worker pool
-        for i in range(num_wait_workers):
-            t_wait = threading.Thread(
-                target=wait_worker,
-                args=(self.engine, self.infer_queue, self.draw_queue, self.stop_event),
-                daemon=True,
-                name=f"wait_worker_{i}",
-            )
-            self._threads.append(t_wait)
-
-        # Create detection post-processing worker pool (draw_queue → GUI overlay)
-        for i in range(num_draw_workers):
-            t_draw = threading.Thread(
-                target=detect_worker,
-                args=(
-                    self.engine,
-                    self.draw_queue,
-                    self.get_selected_classes,
-                    self._on_detections_ready_from_worker,
-                    self.stop_event,
-                ),
-                daemon=True,
-                name=f"detect_worker_{i}",
-            )
-            self._threads.append(t_draw)
-
-        # Start threads
-        for t in self.capture_threads:
-            t.start()
-        for t in self._threads:
-            t.start()
+        self._init_dxstream_backend(config)
 
     # ----- Worker → GUI forwarding wrappers -----
 
@@ -758,8 +678,8 @@ class MainWindow(QtWidgets.QMainWindow):
         """Initialise the native dx_stream inference pipelines (one per channel).
 
         Inference runs entirely in GStreamer (dxpreprocess -> dxinfer ->
-        dxpostprocess); detections are read via pydxs and fed into the same Qt
-        display path used by the legacy backend.
+        dxpostprocess); detections are read via pydxs and fed into the Qt
+        display path.
         """
 
         dxs = config.get("dxstream") or {}
@@ -778,13 +698,12 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         if missing:
             raise RuntimeError(
-                "engine_backend: dxstream requires dx_stream to be installed, "
-                "but the following are missing:\n  - "
+                "This demo is dx_stream-only and requires dx_stream to be "
+                "installed, but the following are missing:\n  - "
                 + "\n  - ".join(missing)
-                + "\n\nInstall dx_stream + pydxs on this machine (and ensure the "
-                "GStreamer plugins are on GST_PLUGIN_PATH), or set "
-                "engine_backend: legacy in the config to use the Python "
-                "dx_engine backend."
+                + "\n\nInstall dx_stream + pydxs on this machine and ensure the "
+                "GStreamer plugins are on GST_PLUGIN_PATH (e.g. "
+                "./install.sh or ./scripts/install_dxstream.sh)."
             )
 
         # Lightweight overlay metadata (no NPU load in Python).
@@ -797,9 +716,32 @@ class MainWindow(QtWidgets.QMainWindow):
             config, input_size, input_size
         )
 
-        display_size = None
-        if dxs.get("display_width") and dxs.get("display_height"):
-            display_size = (int(dxs["display_width"]), int(dxs["display_height"]))
+        # Display downscale (RGA dxscale): keeps Qt handling small RGB tiles
+        # regardless of the source resolution (essential for 4K inputs, helpful
+        # for FHD). Enabled by default; size is configurable and disabled when
+        # explicitly set to 0/false.
+        display_size = self._resolve_display_size(dxs)
+
+        # NV12->RGB colour conversion: prefer the RGA ``dxconvert`` element when
+        # available (offloads the conversion from the CPU); fall back to the CPU
+        # ``videoconvert`` otherwise. Can be forced off via config.
+        color_convert = self._resolve_color_convert(dxs)
+
+        # Pace output to the source's native frame rate for smooth playback and
+        # to avoid wasting NPU/VPU work decoding faster than the video's real
+        # fps. Enabled by default; set dxstream.sync_to_fps: false to run flat
+        # out (max throughput / benchmarking).
+        sync_to_fps = bool(dxs.get("sync_to_fps", True))
+
+        print(
+            "[INFO] dxstream backend: color_convert={} display_size={} "
+            "sync_to_fps={}".format(
+                color_convert,
+                f"{display_size[0]}x{display_size[1]}" if display_size else "native",
+                sync_to_fps,
+            ),
+            flush=True,
+        )
 
         for idx, ch_cfg in enumerate(config.get("channels", [])):
             if not ch_cfg.get("enabled", True):
@@ -813,6 +755,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 postprocess_cfg=post_cfg,
                 appsink_name=f"sink{idx}",
                 display_size=display_size,
+                color_convert=color_convert,
+                sync=sync_to_fps,
             )
             pipe = StreamPipeline(
                 channel_id=idx,
@@ -824,11 +768,55 @@ class MainWindow(QtWidgets.QMainWindow):
                 error_callback=self._on_native_error,
                 meta_src_name=native_pipeline.meta_source_name(f"sink{idx}"),
                 loop=ch_cfg.get("type", "video") == "video",
+                source_size_callback=self._on_native_source_size,
             )
             self.stream_pipelines.append(pipe)
 
         for pipe in self.stream_pipelines:
             pipe.start()
+
+    def _resolve_display_size(
+        self, dxs: Dict[str, Any]
+    ) -> Optional[tuple]:
+        """Resolve the RGA display-downscale size from config.
+
+        Defaults to 960x540 (a quarter of FHD, well-sized for one tile of a 2x2
+        grid). Returns ``None`` when explicitly disabled so the full-resolution
+        frame is delivered to Qt.
+        """
+
+        # Explicit per-axis override.
+        if dxs.get("display_width") and dxs.get("display_height"):
+            return (int(dxs["display_width"]), int(dxs["display_height"]))
+
+        # Explicit disable: display_downscale: false (or 0).
+        if "display_downscale" in dxs and not dxs.get("display_downscale"):
+            return None
+
+        return (960, 540)
+
+    def _resolve_color_convert(self, dxs: Dict[str, Any]) -> str:
+        """Pick the NV12->RGB backend ('rga' or 'cpu').
+
+        Honours an explicit ``dxstream.color_convert`` config value; otherwise
+        auto-selects the RGA ``dxconvert`` element when it is registered,
+        falling back to the CPU ``videoconvert``.
+        """
+
+        requested = str(dxs.get("color_convert", "auto")).lower()
+        if requested == "cpu":
+            return "cpu"
+        if requested == "rga":
+            if not gst_element_available("dxconvert"):
+                print(
+                    "[WARN] dxstream.color_convert=rga requested but 'dxconvert' "
+                    "is not available; falling back to CPU videoconvert.",
+                    flush=True,
+                )
+                return "cpu"
+            return "rga"
+        # auto
+        return "rga" if gst_element_available("dxconvert") else "cpu"
 
     def _on_native_frame(self, channel_id: int, frame: np.ndarray) -> None:
         """GStreamer-thread callback: forward a decoded frame to the Qt display."""
@@ -838,6 +826,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self._native_frame_count = getattr(self, "_native_frame_count", 0) + 1
         ch, out_frame, meta = native_signal.build_frame_payload(channel_id, frame)
         self.frame_ready.emit(ch, out_frame, meta)
+
+    def _on_native_source_size(
+        self, channel_id: int, width: int, height: int
+    ) -> None:
+        """GStreamer-thread callback: original detection-space resolution found."""
+
+        self.source_size_ready.emit(channel_id, width, height)
+
+    @QtCore.Slot(int, int, int)
+    def on_source_size_ready(
+        self, channel_id: int, width: int, height: int
+    ) -> None:
+        """Store the original detection resolution on the channel's widget."""
+
+        if 0 <= channel_id < len(self.video_widgets):
+            self.video_widgets[channel_id].set_detection_source_size(width, height)
 
     def _on_native_error(self, channel_id: int, message: str) -> None:
         """GStreamer-thread callback: a native pipeline reported a fatal error.
@@ -863,25 +867,6 @@ class MainWindow(QtWidgets.QMainWindow):
             channel_id, detections
         )
         self.detections_ready.emit(ch, out_det, meta)
-
-    def _on_display_frame_from_capture(
-        self, channel_id: int, frame: np.ndarray, color_format: str
-    ) -> None:
-        """Callback invoked from a capture thread for every captured frame.
-
-        - Emits to the Qt main thread so the display refreshes at capture FPS,
-          decoupled from the (slower) inference pipeline.
-        """
-
-        meta = {"color_format": color_format, "ts": time.time()}
-        self.frame_ready.emit(channel_id, frame, meta)
-
-    def _on_detections_ready_from_worker(
-        self, channel_id: int, detections: np.ndarray, meta: Dict[str, Any]
-    ) -> None:
-        """Callback invoked from a detect worker thread with finalized detections."""
-
-        self.detections_ready.emit(channel_id, detections, meta)
 
     def _on_paint_timer(self) -> None:
         """Called periodically to repaint all VideoWidgets.
@@ -944,15 +929,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ----- Shutdown -----
 
-    def _join_alive_threads(self, threads: List[Any], timeout: float) -> None:
-        """Join only threads that still exist and are running."""
-
-        for thread in threads:
-            if thread and thread.is_alive():
-                thread.join(timeout=timeout)
-
-    def _stop_capture_threads(self) -> None:
-        """Request capture threads to stop and wait briefly for exit."""
+    def _stop_stream_pipelines(self) -> None:
+        """Request the native dx_stream pipelines to stop."""
 
         for pipe in getattr(self, "stream_pipelines", []):
             try:
@@ -960,45 +938,17 @@ class MainWindow(QtWidgets.QMainWindow):
             except Exception as exc:  # pragma: no cover - board glue
                 print(f"[WARN] stream pipeline stop failed: {exc}")
 
-        for thread in self.capture_threads:
-            if thread:
-                thread.stop()
-
-        self._join_alive_threads(self.capture_threads, timeout=2.0)
-
-    def _worker_queues(self) -> List["queue.Queue[Any]"]:
-        """Return queues that need sentinel values during shutdown."""
-
-        return [self.input_queue, self.infer_queue, self.draw_queue]
-
-    def _stop_worker_threads(self) -> None:
-        """Push sentinel values and wait for worker threads to exit."""
-
-        threads = getattr(self, "_threads", [])
-        for _ in range(len(threads)):
-            for work_queue in self._worker_queues():
-                try:
-                    work_queue.put_nowait(None)
-                except queue.Full:
-                    pass
-
-        self._join_alive_threads(threads, timeout=1.0)
-
     def _cleanup_engine(self) -> None:
-        """Release the engine if it was created."""
+        """Release the display-metadata engine if it was created."""
 
         if hasattr(self, "engine") and self.engine:
             del self.engine
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # pragma: no cover
-        """Clean up worker and capture threads when the window closes."""
+        """Clean up the native pipelines when the window closes."""
         print("[INFO] Shutting down...")
 
-        if hasattr(self, "stop_event"):
-            self.stop_event.set()
-
-        self._stop_capture_threads()
-        self._stop_worker_threads()
+        self._stop_stream_pipelines()
         self._cleanup_engine()
 
         print("[INFO] Shutdown complete")
@@ -1025,7 +975,9 @@ def main() -> None:  # pragma: no cover - entry point
 
     config = load_config(str(default_cfg))
 
-    # cv2.setNumThreads(1)
+    # Pin the process (and all threads/GStreamer workers spawned afterwards) to
+    # the configured CPU cluster, auto-detected from per-core max frequency.
+    cpu_affinity.apply_affinity(str(config.get("cpu_affinity", "performance")))
 
     app = QtWidgets.QApplication(sys.argv)
 

@@ -1,112 +1,87 @@
 
 model: "assets/models/yolo26n-1.dxnn"
 
-# Video decoding mode (global default; can be overridden per channel via `decode:`)
-#   auto : use hardware (GStreamer) decoding when the platform/OpenCV support it,
-#          otherwise fall back to software decoding (default)
-#   hw   : force hardware decoding (still falls back to software if unavailable)
-#   sw   : force software decoding (cv2.VideoCapture default backend)
-# NOTE: hardware decoding requires an OpenCV build with GStreamer support and the
-#       platform decoder plugins (RK3588 mppvideodec / Intel gstreamer1.0-vaapi).
-#       See README for details.
-# RK3588: HW decode through OpenCV's appsink is NOT usable on this board (the
-#       mppvideodec ! dxconvert path deadlocks in PAUSED and never delivers
-#       buffers to cv2.VideoCapture). 'auto' therefore stays on SW decode here.
-#       To get real HW decode on RK3588 use the native GStreamer backend instead:
-#       set `engine_backend: dxstream` below (decodebin selects mppvideodec and
-#       inference runs inside the pipeline, bypassing OpenCV entirely).
-decode: "auto"
-
-# RGA hardware resize (experimental PoC / RK3588 tuning). DISABLED by default.
-#   When true, a `dxscale` element resizes decoded frames to the model input
-#   size on RGA hardware, so the CPU `cv2.resize` in preprocessing is skipped.
-#   Effective only on the RK3588 RGA (dxconvert) decode path.
-#
-#   KNOWN ISSUE (RK3588): with dxscale inserted, the
-#     mppvideodec -> dxscale -> dxconvert -> (pinned RGB caps) -> appsink
-#   pipeline can fail caps negotiation. dxscale is a GstBaseTransform that needs
-#   stable caps for RGA buffer-pool allocation; negotiation failure surfaces as
-#   `GST_IS_CAPS failed` / `structure != NULL` assertions and the HW pipeline
-#   never reaches PLAYING. Keep this false unless you are actively debugging the
-#   dxscale path. For real throughput gains use `engine_backend: dxstream` below.
-#
-#   Trade-offs (when it does work): dxscale is a *stretch* resize (no
-#   aspect-ratio letterbox) and the displayed frame is downscaled to the model
-#   size, so detection accuracy and display sharpness may drop.
-rga_resize: false
-
-# Inference backend selector.
-#   legacy   : Python dx_engine workers (cv2 capture -> preprocess -> infer ->
-#              postprocess in Python). Default; works everywhere. On RK3588 video
-#              decode is software-only (OpenCV appsink HW decode is unusable here).
-#   dxstream : native dx_stream GStreamer pipeline (decodebin -> dxpreprocess ->
-#              dxinfer -> dxpostprocess) with detections read via pydxs. OpenCV is
-#              not used at all, so on RK3588 `decodebin` selects the HW decoder
-#              (mppvideodec) -> this is the way to get HW decode on this board.
-#              Requires the dx_stream plugins + pydxs on the board and has NO
-#              software fallback (startup aborts with a clear error if missing).
-#              Verify with: gst-inspect-1.0 dxinfer && python -c "import pydxs"
+# This demo is dx_stream-only (no OpenCV). The native GStreamer pipeline runs
+#   decodebin (HW mppvideodec) -> dxpreprocess (RGA letterbox/resize) ->
+#   dxinfer (NPU) -> dxpostprocess -> [dxscale display downscale] ->
+#   dxconvert/videoconvert (NV12->RGB) -> appsink
+# and detections are read back via pydxs. Requires dx_stream + pydxs installed
+# (verify: gst-inspect-1.0 dxinfer && python -c "import pydxs").
 engine_backend: "dxstream"
 
-# Native dx_stream backend settings (used only when engine_backend: dxstream).
+# Native dx_stream backend settings.
 dxstream:
   # dxpostprocess decoder library for YOLO26 object detection.
   postprocess_library: "/usr/local/share/gstdxstream/lib/libpostprocess_yolo26od.so"
   postprocess_function: "PostProcess"
   keep_ratio: true
   pad_value: 114
-  # Optional display downscale (RGA dxscale) applied after postprocess.
+
+  # NV12->RGB colour conversion backend for the display branch:
+  #   auto : use the RGA `dxconvert` element when available, else CPU
+  #          `videoconvert` (default).
+  #   rga  : force RGA `dxconvert` (falls back to CPU with a warning if missing).
+  #   cpu  : force CPU `videoconvert`.
+  color_convert: "auto"
+
+  # Pace each channel to its source video's native frame rate (appsink syncs to
+  # the buffer PTS). true  -> smooth playback at the original fps, and the NPU/VPU
+  # do not waste work decoding faster than real time (default). false -> run flat
+  # out for max-throughput benchmarking.
+  sync_to_fps: true
+
+  # Display downscale (RGA `dxscale`): the frame delivered to Qt is resized to
+  # this resolution so the GUI only ever handles small RGB tiles, regardless of
+  # the source resolution (essential for 4K inputs, helpful for FHD). Detection
+  # boxes stay correct because they are read upstream in original-frame coords.
+  # Defaults to 960x540 (a quarter of FHD) when unset. Set display_downscale to
+  # false to deliver full-resolution frames instead.
+  # display_downscale: true
   # display_width: 960
   # display_height: 540
 
+# Pin the demo's hot threads to a CPU cluster auto-detected from per-core max
+# frequency. cluster:
+#   performance : the fastest cores (e.g. RK3588 A76 cpu4-7) - default.
+#   efficiency  : the power-efficient cores (e.g. RK3588 A55 cpu0-3).
+#   none        : do not set CPU affinity.
+cpu_affinity: "performance"
 
-workers:
-  # rockpi profiling showed read~90 but pre=inf=draw~30 (per-stage totals):
-  # the inference pipeline is the bottleneck while the NPU itself is starved.
-  # Raising preprocess alone just shifts the backpressure to draw, so scale
-  # preprocess (CPU-bound letterbox/resize/normalize) and draw (detection
-  # post-processing) together. wait (single NPU async result collector with
-  # in-flight pipelining) stays at 1.
-  preprocess: 2
-  wait: 1
-  draw: 2
+# Rendering backend for the 2x2 tile display:
+#   auto   : use the Mali GPU (OpenGL) when available, else CPU QPainter (default)
+#   gpu    : force GPU rendering (falls back to CPU if OpenGL is unavailable)
+#   cpu    : force CPU QPainter rendering
+render_backend: "auto"
 
 channels:
   - name: "ch1"
     type: "video"
     source: "assets/videos/cctv-city-road.mov"
     enabled: true
-    max_fps: 45
-    # decode: "auto"   # optional per-channel override (auto/hw/sw)
 
   - name: "ch2"
     type: "video"
     source: "assets/videos/dron-citry-road.mov"
     enabled: true
-    max_fps: 45
 
   - name: "ch3"
     type: "video"
     source: "assets/videos/carrierbag.mp4"
     enabled: true
-    max_fps: 45
 
   - name: "ch4"
     type: "video"
     source: "assets/videos/dance-group.mov"
     enabled: true
-    max_fps: 45
 
 # rtsp example
 #  - name: "ch4"
 #    type: "rtsp"
 #    source: "rtsp://username:password@ip_address:port/stream"
 #    enabled: true
-#    max_fps: 25
 
 # camera example
 #  - name: "ch4"
 #    type: "camera"
 #    source: 0
 #    enabled: true
-#    max_fps: 25

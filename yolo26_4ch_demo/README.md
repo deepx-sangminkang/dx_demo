@@ -2,25 +2,51 @@
 
 # YOLO26 Multi-Channel Demo
 
-A multi-channel Qt demo application using the YOLO26 detection model.
+A multi-channel Qt demo application using the YOLO26 detection model, built
+entirely on **dx_stream** (native GStreamer). There is **no OpenCV dependency**.
 
-- The Qt GUI has a **class list panel** on the right side, where each class has a checkbox
-  to individually control whether the BBOX for that class is displayed.
+- The Qt GUI has a **class list panel** on the right side, where each class has a
+  checkbox to individually control whether the BBOX for that class is displayed.
 
 ## Screenshot
 
 ![YOLO26 Demo Screenshot](img/yolo26_4ch_demo_screenshot.png)
 
-## Prerequisites
+## Architecture
 
-Before running this project, **DX-RT** (DeepX Runtime) must be built and the `dx_engine` module must be importable in Python.
+Each channel runs **one native dx_stream GStreamer pipeline**:
 
-```python
-# The following must run without errors
-import dx_engine
+```
+decodebin (HW mppvideodec)         # hardware video decode (VPU)
+  -> dxpreprocess                  # RGA letterbox / resize for the model
+  -> dxinfer                       # YOLO26 inference on the NPU
+  -> dxpostprocess                 # decode detections (original-frame coords)
+  -> [dxscale]                     # RGA display downscale (e.g. 960x540)
+  -> dxconvert | videoconvert      # NV12 -> RGB (RGA hardware when available)
+  -> appsink                       # frames + detections handed to Qt
 ```
 
-Refer to the DX-RT project documentation for installation and build instructions.
+Inference runs entirely on the NPU inside GStreamer. The Python side only
+receives small RGB tiles and detection metadata (read back via `pydxs`) and
+draws overlays. Colour conversion and display downscale are offloaded to the
+**RGA** hardware, the 2x2 tiles can be composited on the **Mali GPU**, and each
+channel is paced to its source video's **native FPS** for smooth playback.
+
+## Prerequisites
+
+This demo **requires** the dx_stream GStreamer plugin (`dxpreprocess` /
+`dxinfer` / `dxpostprocess` / `dxscale` / `dxconvert`) and the `pydxs` Python
+bindings, which are built on top of **DX-RT** (DeepX Runtime). There is no
+software fallback — if these are missing, startup aborts with a clear error.
+
+Verify they are present:
+
+```bash
+gst-inspect-1.0 dxinfer        # dx_stream plugin registered
+python -c "import pydxs"        # pydxs bindings importable
+```
+
+If either fails, install dx_stream (see below).
 
 ## Installation
 
@@ -31,23 +57,23 @@ Run the demo with:
 ```
 
 `run_demo.sh` automatically checks and installs what is missing before starting:
-1. Installs any missing Python dependencies (`requirements.txt`)
+1. Installs any missing Python dependencies (`requirements.txt` — numpy,
+   PySide6, PyYAML, packaging; **no OpenCV**)
 2. Downloads sample videos into `assets/videos/` if not present
 
 To install manually without running the demo:
 
 ```bash
-./install.sh
+./install.sh                              # full demo + dx_stream (default)
+./install.sh --skip-dxstream              # demo only (dx_stream already present)
+./install.sh --dxstream-runtime-dir=PATH  # use a specific dx-runtime checkout
 ```
 
-### Installing the `dxstream` backend (external dx_stream)
+### Installing dx_stream
 
-The default install covers the **legacy** backend only. The native
-[`dxstream`](#inference-backend-engine_backend) backend additionally needs the
-dx_stream GStreamer plugin (`dxpreprocess` / `dxinfer` / `dxpostprocess` /
-`dxscale`) and the `pydxs` Python bindings. **dx_stream is installed separately**
-from this demo, via the official DeepX [dx-runtime](https://github.com/DEEPX-AI/dx-runtime)
-installer:
+`install.sh` installs dx_stream by default via the official DeepX
+[dx-runtime](https://github.com/DEEPX-AI/dx-runtime) installer (it locates a
+dx-runtime checkout and runs it for you). To do it manually:
 
 ```bash
 git clone --recurse-submodules https://github.com/DEEPX-AI/dx-runtime
@@ -55,182 +81,133 @@ cd dx-runtime
 ./install.sh --target=dx_stream
 ```
 
-Once dx_stream is installed (its plugin is registered with GStreamer, usually
-under `/usr/local/lib/<arch>/gstreamer-1.0`), run the demo as usual. As a
-convenience, this command locates a dx-runtime checkout and runs the installer
-for you:
-
-```bash
-./install.sh --with-dxstream                       # full demo + dx_stream install
-# or, standalone (idempotent — skips if dxinfer is already registered):
-./scripts/install_dxstream.sh                       # auto-detects ~/workspace/dx-runtime
-./scripts/install_dxstream.sh --runtime-dir=/path/to/dx-runtime
-```
-
-> The dxstream backend needs **DX-RT** plus the dx_stream plugin, `pydxs`,
-> GStreamer, OpenCV and json-glib (and `librga` on RK3588) — all provided by the
-> dx-runtime install above. The demo itself does **not** require the `dx_engine`
-> Python module for the dxstream backend (inference runs in the native `dxinfer`
-> element); `dx_engine` is only needed for the legacy backend.
+This provides the dx_stream plugin, `pydxs`, GStreamer, json-glib and (on
+RK3588) `librga`. Once installed, the plugin is registered with GStreamer
+(usually under `/usr/local/lib/<arch>/gstreamer-1.0`); run the demo as usual.
 
 ## Configuration
 
-Edit [`demo/config/yolo26_multich.yaml`](demo/config/yolo26_multich.yaml) to match your environment.
-
-### Configuration Options
+Edit [`demo/config/yolo26_multich.yaml`](demo/config/yolo26_multich.yaml) to
+match your environment.
 
 ```yaml
 # Model file path (DXNN format)
-model: "assets/models/yolo11s-seg_optim.dxnn"
+model: "assets/models/yolo26n-1.dxnn"
 
-# Video decoding mode (global default, can be overridden per channel)
-#   auto : HW decode when supported, otherwise SW (default)
-#   hw   : force HW decode (falls back to SW if unavailable)
-#   sw   : force SW decode
-decode: "auto"
+# Inference backend. Only "dxstream" is supported (the legacy OpenCV backend
+# has been removed).
+engine_backend: "dxstream"
 
-# Worker thread counts
-workers:
-  preprocess: 1   # Pre-processing workers
-  wait: 1         # Inference wait workers
-  draw: 1         # Rendering workers
+dxstream:
+  postprocess_library: "/usr/local/share/gstdxstream/lib/libpostprocess_yolo26od.so"
+  postprocess_function: "PostProcess"
+  keep_ratio: true
+  pad_value: 114
 
-# Input channel configuration (up to 4 channels)
+  # NV12 -> RGB colour conversion for the display branch:
+  #   auto : RGA `dxconvert` when available, else CPU `videoconvert` (default)
+  #   rga  : force RGA `dxconvert` (warns + falls back to CPU if missing)
+  #   cpu  : force CPU `videoconvert`
+  color_convert: "auto"
+
+  # Pace each channel to its source video's native frame rate (appsink syncs to
+  # the buffer PTS). true -> smooth playback at the original fps, and the NPU/VPU
+  # do not waste work decoding faster than real time (default). false -> run flat
+  # out for max-throughput benchmarking.
+  sync_to_fps: true
+
+  # Display downscale (RGA `dxscale`): the frame delivered to Qt is resized to
+  # this resolution, so the GUI only handles small RGB tiles regardless of the
+  # source resolution (essential for 4K inputs, helpful for FHD). Detection
+  # boxes stay correct because they are read upstream in original-frame coords.
+  # Defaults to 960x540 when unset; set display_downscale: false to disable.
+  # display_downscale: true
+  # display_width: 960
+  # display_height: 540
+
+# Pin the demo's hot threads to an auto-detected CPU cluster:
+#   performance : the fastest cores (e.g. RK3588 A76 cpu4-7) - default
+#   efficiency  : the power-efficient cores (e.g. RK3588 A55 cpu0-3)
+#   none        : do not set CPU affinity
+cpu_affinity: "performance"
+
+# Rendering backend for the 2x2 tile display:
+#   auto : Mali GPU (OpenGL) when available, else CPU QPainter (default)
+#   gpu  : force GPU rendering (falls back to CPU if OpenGL is unavailable)
+#   cpu  : force CPU QPainter rendering
+render_backend: "auto"
+
+# Input channels (up to 4)
 channels:
-  - name: "ch1"               # Channel name
-    type: "video"             # Input type: video, rtsp, camera
-    source: "assets/videos/example.mov"  # Input source path
-    enabled: true             # Enable/disable channel
-    max_fps: 25              # Maximum FPS
-
-  - name: "ch2"
-    type: "rtsp"
-    source: "rtsp://192.168.1.100:8554/stream"
+  - name: "ch1"
+    type: "video"             # video | rtsp | camera
+    source: "assets/videos/cctv-city-road.mov"
     enabled: true
-    max_fps: 25
-
-  - name: "ch3"
-    type: "camera"
-    source: 0                 # Camera device index
-    enabled: false
-    max_fps: 25
 ```
 
 **Source value by input type:**
 - `video`: Path to a video file
-- `rtsp`: RTSP stream URL
+- `rtsp`: RTSP stream URL (e.g. `rtsp://user:pass@ip:port/stream`)
 - `camera`: Camera device index (0, 1, 2, ...)
 
-### Inference Backend (`engine_backend`)
+## Hardware acceleration
 
-```yaml
-# Inference backend selection
-#   legacy   : Python dx_engine inference (default). dx_stream is OPTIONAL —
-#              on RK3588 the dxconvert/dxscale elements are used for RGA
-#              acceleration only if present, otherwise it falls back to plain
-#              GStreamer / software decoding.
-#   dxstream : Native GStreamer inference (dxpreprocess -> dxinfer ->
-#              dxpostprocess), detections read back via pydxs. This backend
-#              REQUIRES dx_stream and its pydxs bindings to be installed; it has
-#              NO software fallback. If they are missing, startup aborts with a
-#              clear error instead of showing a black screen.
-engine_backend: "legacy"
-```
+The whole pipeline is hardware-accelerated on RK3588 (Orange Pi 5 Plus / RockPi):
 
-> **Note:** The default `install.sh` does **not** build dx_stream. The
-> `dxstream` backend (and the optional RGA acceleration path of the `legacy`
-> backend) assume dx_stream is installed, with its GStreamer plugins reachable
-> via `GST_PLUGIN_PATH`. Install it with `./install.sh --with-dxstream` or
-> `./scripts/install_dxstream.sh` (see [Installation](#installing-the-dxstream-backend-dx_stream)).
-
-## Hardware-Accelerated Decoding (GStreamer)
-
-By default each channel decodes video on the CPU (software). Setting `decode: "auto"`
-(or `"hw"`) offloads decoding to the platform hardware decoder through a GStreamer
-pipeline (`cv2.VideoCapture(..., cv2.CAP_GSTREAMER)`), reducing CPU load when running
-multiple high-resolution channels.
-
-**Platform is auto-detected:**
-
-| Platform | HW decoder | Required plugin |
+| Stage | Element | Hardware |
 |---|---|---|
-| RK3588 (Orange Pi 5 Plus) | `mppvideodec` | included in the official Rockchip image |
-| Intel iGPU | VAAPI (`vaapidecodebin`) | `sudo apt install gstreamer1.0-vaapi` |
+| Video decode | `mppvideodec` (auto-selected by `decodebin`) | VPU (MPP) |
+| Preprocess (letterbox/resize) | `dxpreprocess` | RGA |
+| Inference | `dxinfer` | NPU |
+| Display downscale | `dxscale` | RGA |
+| NV12 → RGB | `dxconvert` (`color_convert: auto`/`rga`) | RGA |
+| Tile compositing | `GLVideoWidget` (`render_backend: auto`/`gpu`) | Mali GPU |
 
-**Prerequisites:**
+The negotiated decoder is logged at startup so you can confirm HW decode is
+active (e.g. `decoder: mppvideodec (HW)`); if `decodebin` ever falls back to a
+software decoder it is reported as `(SW)`.
 
-1. **OpenCV must be built with GStreamer support.** The PyPI `opencv-python` wheel is
-   built **without** GStreamer. Verify with:
-   ```bash
-   python -c "import cv2; print(cv2.getBuildInformation())" | grep -i gstreamer
-   ```
-   If it prints `GStreamer: NO`, install a GStreamer-enabled OpenCV (the RK3588 system
-   image already provides one; on other platforms use the distro `python3-opencv`
-   package or a custom build). **`install.sh` enforces this automatically** via
-   `scripts/ensure_gstreamer_opencv.sh`: it verifies GStreamer support and, when
-   missing, installs the distro `python3-opencv` + GStreamer plugins and removes the
-   shadowing pip wheel; the install **fails with guidance** if a GStreamer-enabled
-   OpenCV still cannot be provided (e.g. inside a venv created without
-   `--system-site-packages`).
-2. Install the platform decoder plugin from the table above.
+### Native-FPS (smooth) playback
 
-**RGA-accelerated colour conversion (RK3588):**
+With `sync_to_fps: true` (default), the appsink presents buffers at their PTS,
+so each channel plays at its source's native frame rate rather than as fast as
+the VPU/NPU allow. Backpressure propagates upstream, so the decoder and NPU only
+do real-time work — smoother video and lower power. Set `sync_to_fps: false` for
+flat-out throughput benchmarking.
 
-On RK3588, when the dx_stream GStreamer plugin's `dxconvert` element is available, the
-demo inserts it into the decode pipeline so the **NV12→RGB conversion runs on the RGA
-hardware** instead of the CPU. The pipeline then delivers `RGB` frames and the demo runs
-**RGB end-to-end**, skipping the two redundant `cvtColor` calls (preprocess and paint).
-This is detected automatically (`gst-inspect-1.0 dxconvert`); if `dxconvert` is missing,
-the demo falls back to the CPU `videoconvert`→`BGR` path. The captured colour order is
-reported per channel at startup, e.g. `decode=HW (GStreamer) color=rgb (video)`.
+### Resolution-agnostic display (4K ready)
 
-If either prerequisite is missing, the demo automatically **falls back to software
-decoding** and prints the reason per channel at startup, e.g.:
+The display branch always downscales to `display_width` x `display_height`
+(default 960x540) on the RGA before handing frames to Qt, so the GUI cost is
+independent of the source resolution — FHD or 4K inputs are both handled. Set
+`display_downscale: false` to deliver full-resolution frames. Detections stay
+accurate because they are read upstream of `dxscale`, in original-frame
+coordinates, and the overlay maps them onto the downscaled tile.
 
-```
-[INFO] Channel 0: decode=SW color=bgr (video) - OpenCV built without GStreamer support; using SW decode
-```
+### CPU affinity
 
-> **Note on performance:** HW decoding reduces CPU usage. On RK3588 the RGA `dxconvert`
-> path additionally offloads colour conversion and removes the two CPU `cvtColor` steps,
-> which directly relieves the preprocess bottleneck (the main cause of input drop with
-> many high-resolution channels).
+At startup the demo reads `/sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq`
+to classify cores into **efficiency** (lowest max-freq) and **performance**
+(faster) clusters, then pins the process accordingly (`cpu_affinity` config).
+On RK3588 the A55 cores (cpu0-3, ~1.8 GHz) are the efficiency cluster and the
+A76 cores (cpu4-7, ~2.25-2.3 GHz) are the performance cluster — `performance`
+(default) pins to the A76s. It is a no-op on platforms without cpufreq sysfs.
 
 ## Running
-
 
 ```bash
 ./run_demo.sh
 ```
 
-## Performance Tuning
-
-The demo shows per-stage frame drop counters in the title bar. Use them to identify bottlenecks and adjust `workers:` counts in [`demo/config/yolo26_multich.yaml`](demo/config/yolo26_multich.yaml).
-
-![Drop example](img/drop_example_capture.png)
-
-> The screenshot above shows `input drop` increasing — this means the preprocess workers cannot keep up with the capture rate. Increase `workers.preprocess` to resolve this.
-
-| Drop counter | Bottleneck | Action |
-|---|---|---|
-| `input drop` | Preprocess workers are too slow | Increase `workers.preprocess` |
-| `infer drop` | Inference wait workers are too slow | Increase `workers.wait` |
-| `draw drop` | Rendering is too slow | Increase `workers.draw` |
-
-```yaml
-workers:
-  preprocess: 1   # increase if input drop is high
-  wait: 1         # increase if infer drop is high
-  draw: 1         # increase if draw drop is high
-```
-
-> Optimal values depend on your hardware (CPU cores, NPU throughput, number of active channels).
-
 ## Project Structure
 
-- `demo/main.py` - Qt GUI main application
-- `demo/engine.py` - YOLO26 inference engine wrapper
-- `demo/workers.py` - Multi-threaded workers (capture / pre-process / post-process)
+- `demo/main.py` - Qt GUI main application (CPU/GPU video widgets, orchestration)
+- `demo/native_pipeline.py` - Builds the dx_stream GStreamer launch string
+- `demo/stream_pipeline.py` - Runs one pipeline per channel, bridges to Qt
+- `demo/native_config.py` - Config loading / backend validation
+- `demo/cpu_affinity.py` - CPU cluster auto-detection and pinning
+- `demo/gst_utils.py` - GStreamer element availability check (no OpenCV)
+- `demo/meta_adapter.py` / `demo/pydxs_bridge.py` - pydxs detection read-back
 - `demo/config/yolo26_multich.yaml` - Configuration file
 - `assets/models/` - DXNN model files
 - `assets/videos/` - Test video files
