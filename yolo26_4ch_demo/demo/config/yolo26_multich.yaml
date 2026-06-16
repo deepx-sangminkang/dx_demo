@@ -24,10 +24,11 @@ dxstream:
   #   cpu  : force CPU `videoconvert`.
   color_convert: "auto"
 
-  # Pace each channel to its source video's native frame rate (appsink syncs to
-  # the buffer PTS). true  -> smooth playback at the original fps, and the NPU/VPU
-  # do not waste work decoding faster than real time (default). false -> run flat
-  # out for max-throughput benchmarking.
+  # Pace each channel to its source video's native frame rate. Pacing is done
+  # in Python (backpressure in the appsink streaming thread), so it stays smooth
+  # AND loops seamlessly. true  -> smooth playback at the original fps, and the
+  # NPU/VPU do not waste work decoding faster than real time (default). false ->
+  # run flat out for max-throughput benchmarking.
   sync_to_fps: true
 
   # Display downscale (RGA `dxscale`): the frame delivered to Qt is resized to

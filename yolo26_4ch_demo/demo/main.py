@@ -731,6 +731,13 @@ class MainWindow(QtWidgets.QMainWindow):
         # to avoid wasting NPU/VPU work decoding faster than the video's real
         # fps. Enabled by default; set dxstream.sync_to_fps: false to run flat
         # out (max throughput / benchmarking).
+        #
+        # Pacing is done in Python (StreamPipeline._pace), NOT via the appsink's
+        # clock sync: a clock-synced appsink (sync=true) stalls the gapless
+        # SEGMENT-loop seek on the dx_stream pipeline for several seconds, which
+        # is what produced the visible ~2s gap when a clip looped. Running the
+        # appsink sync=false keeps looping seamless while Python backpressure
+        # still throttles the pipeline to the native fps.
         sync_to_fps = bool(dxs.get("sync_to_fps", True))
 
         print(
@@ -756,7 +763,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 appsink_name=f"sink{idx}",
                 display_size=display_size,
                 color_convert=color_convert,
-                sync=sync_to_fps,
+                sync=False,
             )
             pipe = StreamPipeline(
                 channel_id=idx,
@@ -769,6 +776,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 meta_src_name=native_pipeline.meta_source_name(f"sink{idx}"),
                 loop=ch_cfg.get("type", "video") == "video",
                 source_size_callback=self._on_native_source_size,
+                pace_fps=sync_to_fps,
             )
             self.stream_pipelines.append(pipe)
 

@@ -484,3 +484,74 @@ def test_note_sample_time_updates_timestamp():
     assert pipe._last_sample_mono is None
     pipe._note_sample_time()
     assert pipe._last_sample_mono is not None
+
+
+# ----- native-fps pacing (host-testable) -----
+
+
+class _FakeBuf:
+    def __init__(self, pts):
+        self.pts = pts
+
+
+def _pace_pipe(clock, sleeps):
+    return sp.StreamPipeline(
+        channel_id=0,
+        pipeline_str="x",
+        bridge=_FakeBridge(np.zeros((0, 6), dtype=np.float32)),
+        frame_callback=lambda ch, f: None,
+        detection_callback=lambda ch, d: None,
+        gst=_FakeGst,
+        sample_extractor=lambda sample: (None, None),
+        pace_fps=True,
+        monotonic=lambda: clock["t"],
+        sleep=lambda d: sleeps.append(d),
+    )
+
+
+def test_pace_first_frame_sets_anchor_without_sleeping():
+    clock, sleeps = {"t": 1000.0}, []
+    pipe = _pace_pipe(clock, sleeps)
+    pipe._pace(_FakeBuf(pts=0))
+    assert sleeps == []
+    assert pipe._pace_anchor_pts == 0
+
+
+def test_pace_sleeps_until_pts_target():
+    clock, sleeps = {"t": 1000.0}, []
+    pipe = _pace_pipe(clock, sleeps)
+    pipe._pace(_FakeBuf(pts=0))            # anchor at wall=1000, pts=0
+    # next frame one second of PTS later, but no wall time has elapsed -> sleep ~1s
+    pipe._pace(_FakeBuf(pts=1_000_000_000))
+    assert len(sleeps) == 1
+    assert abs(sleeps[0] - pipe._PACE_MAX_SLEEP) < 1e-9  # capped at PACE_MAX_SLEEP
+
+
+def test_pace_no_sleep_when_already_behind():
+    clock, sleeps = {"t": 1000.0}, []
+    pipe = _pace_pipe(clock, sleeps)
+    pipe._pace(_FakeBuf(pts=0))
+    clock["t"] = 1005.0  # wall jumped ahead of the 0.033s PTS target
+    pipe._pace(_FakeBuf(pts=33_000_000))
+    assert sleeps == []
+
+
+def test_pace_resets_anchor_on_loop_seam():
+    clock, sleeps = {"t": 1000.0}, []
+    pipe = _pace_pipe(clock, sleeps)
+    pipe._pace(_FakeBuf(pts=0))
+    pipe._pace(_FakeBuf(pts=33_000_000))   # advances last_pts
+    sleeps.clear()
+    # loop seam: PTS jumps backwards -> re-anchor, must not sleep a clip length
+    pipe._pace(_FakeBuf(pts=0))
+    assert sleeps == []
+    assert pipe._pace_anchor_pts == 0
+
+
+def test_pace_ignores_invalid_pts():
+    clock, sleeps = {"t": 1000.0}, []
+    pipe = _pace_pipe(clock, sleeps)
+    pipe._gst.CLOCK_TIME_NONE = 18446744073709551615
+    pipe._pace(_FakeBuf(pts=pipe._gst.CLOCK_TIME_NONE))
+    assert sleeps == []
+    assert pipe._pace_anchor_wall is None

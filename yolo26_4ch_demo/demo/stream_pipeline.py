@@ -56,6 +56,9 @@ class StreamPipeline:
         meta_src_name: Optional[str] = None,
         loop: bool = False,
         source_size_callback: Optional[Callable[[int, int, int], None]] = None,
+        pace_fps: bool = False,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
     ):
         self.channel_id = channel_id
         self.pipeline_str = pipeline_str
@@ -73,6 +76,21 @@ class StreamPipeline:
         self.source_size_callback = source_size_callback
         self._source_size_reported = False
         self._segment_armed = False
+        # Native-fps pacing: the appsink runs sync=false (so gapless SEGMENT-loop
+        # seeks are not stalled by GstBaseSink clock-sync) and instead this class
+        # paces delivery to the source PTS in the streaming thread. The sleep
+        # creates backpressure that throttles the whole pipeline to the video's
+        # real frame rate, so the NPU/VPU do not run flat out. The pacing anchor
+        # is reset on a PTS discontinuity (the loop seam, where PTS jumps back to
+        # 0) so looping stays seamless instead of sleeping a whole clip-length.
+        self.pace_fps = pace_fps
+        self._monotonic = monotonic
+        self._sleep = sleep
+        self._pace_anchor_wall: Optional[float] = None
+        self._pace_anchor_pts: Optional[int] = None
+        self._pace_last_pts: Optional[int] = None
+        # Cap a single pacing sleep so a bad/huge PTS gap can never freeze a tile.
+        self._PACE_MAX_SLEEP = 0.5
 
         self._gst = gst
         self._extract = sample_extractor
@@ -219,6 +237,8 @@ class StreamPipeline:
             if frame is None:
                 return self._gst.FlowReturn.OK
 
+            if self.pace_fps:
+                self._pace(gst_buffer)
             self._note_sample_time()
             detections = self._detections_for_sample(gst_buffer)
             self._log_detection_diagnostics(detections)
@@ -228,6 +248,33 @@ class StreamPipeline:
             logger.exception("stream sample dispatch failed (ch %s): %s",
                              self.channel_id, exc)
         return self._gst.FlowReturn.OK
+
+    def _pace(self, gst_buffer) -> None:
+        """Throttle the streaming thread so frames are delivered at source fps.
+
+        Sleeps until wall-clock time matches the buffer PTS (relative to a moving
+        anchor). The anchor is (re)set on the first frame and whenever PTS jumps
+        backwards -- the gapless loop seam -- so wrapping from end-of-clip back to
+        the start never incurs a clip-length sleep. The sleep itself backpressures
+        the upstream decode/NPU, capping the whole pipeline to real-time fps.
+        """
+
+        pts = self._buffer_pts(gst_buffer)
+        if pts is None:
+            return
+        now = self._monotonic()
+        if (self._pace_anchor_wall is None
+                or self._pace_last_pts is None
+                or pts < self._pace_last_pts):
+            self._pace_anchor_wall = now
+            self._pace_anchor_pts = pts
+            self._pace_last_pts = pts
+            return
+        self._pace_last_pts = pts
+        target = self._pace_anchor_wall + (pts - self._pace_anchor_pts) / 1e9
+        delay = target - self._monotonic()
+        if delay > 0:
+            self._sleep(min(delay, self._PACE_MAX_SLEEP))
 
     def _detections_for_sample(self, gst_buffer):
         """Resolve detections for an appsink buffer.

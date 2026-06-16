@@ -14,11 +14,12 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, Union
 
 # Keep only the newest decoded sample, never block, and emit ``new-sample`` so
-# the Python side can pull frames + metadata. ``sync`` is parameterised: with
-# ``sync=false`` the appsink delivers frames as fast as the pipeline produces
-# them (max throughput); with ``sync=true`` it presents buffers at their PTS so
-# playback is paced to the source's native frame rate (smooth, no wasted NPU/VPU
-# work decoding faster than the video's real fps).
+# the Python side can pull frames + metadata. ``sync`` toggles the appsink's
+# clock sync: ``sync=false`` delivers frames as fast as the pipeline produces
+# them. NOTE: native-fps pacing is done in Python (StreamPipeline._pace), not via
+# ``sync=true`` -- a clock-synced appsink stalls the gapless SEGMENT-loop seek on
+# the dx_stream pipeline for several seconds (a visible gap when a clip loops), so
+# looping channels must run the appsink ``sync=false`` and pace in Python instead.
 _APPSINK_BASE_OPTS = "drop=true max-buffers=1 emit-signals=true"
 
 
