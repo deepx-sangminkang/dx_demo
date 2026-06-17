@@ -48,6 +48,16 @@ dxstream:
 #   none        : do not set CPU affinity.
 cpu_affinity: "performance"
 
+# Lock the CPU/GPU clocks high at startup so playback is smooth from the very
+# first frame. RK3588 boots with ondemand-style DVFS governors that idle the
+# clocks low (the Mali GPU sits at ~300 MHz) and only ramp up after a few
+# seconds of load, which makes the demo janky for the first 5-10s. When true
+# (default), the CPU governor is set to 'performance' and the GPU is pinned to
+# its max frequency (best-effort; restored on exit). Set false to leave the
+# system governors untouched.
+perf_mode: true
+
+
 # Rendering backend for the 2x2 tile display:
 #   auto   : use the Mali GPU (OpenGL) when available, else CPU QPainter (default)
 #   gpu    : force GPU rendering (falls back to CPU if OpenGL is unavailable)

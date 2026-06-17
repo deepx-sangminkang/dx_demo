@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import sys
+import os
+import signal
 import threading
 import time
 from pathlib import Path
@@ -39,6 +41,7 @@ from demo.engine import NativeDisplayMeta
 from demo.overlay import scale_box
 from demo import native_config, native_pipeline, native_signal
 from demo import cpu_affinity
+from demo import perf_mode
 from demo.gst_utils import gst_element_available
 from demo.meta_adapter import filter_by_classes
 from demo.pydxs_bridge import PydxsBridge
@@ -340,6 +343,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # Set once the window starts closing so GStreamer-thread callbacks stop
         # touching widgets that are being torn down (avoids crashes during exit).
         self._shutting_down = False
+        # Daemon threads that tear pipelines down off the GUI thread on close.
+        self._shutdown_threads: List[threading.Thread] = []
 
         # Timer for periodic screen refresh (approx. 30 FPS)
         self._paint_timer = QtCore.QTimer(self)
@@ -955,25 +960,33 @@ class MainWindow(QtWidgets.QMainWindow):
     # ----- Shutdown -----
 
     def _stop_stream_pipelines(self) -> None:
-        """Stop all native dx_stream pipelines promptly and safely.
+        """Begin tearing down every pipeline without blocking the GUI thread.
 
-        The NULL transition + loop quit is requested for every channel first, so
-        the four pipelines tear down concurrently instead of serialising several
-        seconds of NPU/VPU teardown; only then do we join their threads. This
-        keeps window-close responsive and avoids the OS force-killing the app.
+        Each channel's NULL transition + loop-thread join runs in its own daemon
+        thread, so the (potentially multi-second) NPU/VPU teardown never blocks
+        the GUI thread -- the window closes instantly instead of hanging and
+        being reported "not responding". The spawned threads are exposed via
+        :attr:`_shutdown_threads` so ``main()`` can give them a brief, bounded
+        grace period before force-exiting the process.
         """
 
         pipes = list(getattr(self, "stream_pipelines", []))
+        threads: List[threading.Thread] = []
         for pipe in pipes:
-            try:
-                pipe.begin_stop()
-            except Exception as exc:  # pragma: no cover - board glue
-                print(f"[WARN] stream pipeline begin_stop failed: {exc}")
-        for pipe in pipes:
-            try:
-                pipe.join_stop()
-            except Exception as exc:  # pragma: no cover - board glue
-                print(f"[WARN] stream pipeline join_stop failed: {exc}")
+            t = threading.Thread(
+                target=self._teardown_pipeline, args=(pipe,), daemon=True
+            )
+            t.start()
+            threads.append(t)
+        self._shutdown_threads = threads
+
+    @staticmethod
+    def _teardown_pipeline(pipe: StreamPipeline) -> None:  # pragma: no cover - board glue
+        try:
+            pipe.begin_stop()
+            pipe.join_stop(timeout=1.5)
+        except Exception as exc:
+            print(f"[WARN] stream pipeline stop failed: {exc}")
 
     def _cleanup_engine(self) -> None:
         """Release the display-metadata engine if it was created."""
@@ -990,7 +1003,13 @@ class MainWindow(QtWidgets.QMainWindow):
         super().keyPressEvent(event)
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # pragma: no cover
-        """Clean up the native pipelines when the window closes."""
+        """Close the window immediately and tear pipelines down in the background.
+
+        Triggered by Q/Esc and by the window-manager close button. The window is
+        hidden and the Qt event loop is asked to quit right away; the heavy
+        GStreamer teardown happens off the GUI thread (see
+        :meth:`_stop_stream_pipelines`) so closing never hangs.
+        """
 
         if self._shutting_down:
             event.accept()
@@ -998,15 +1017,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._shutting_down = True
         print("[INFO] Shutting down...")
 
-        # Stop repainting first so the GUI thread isn't fighting the teardown.
+        # Stop repainting and drop the window from the screen first so the close
+        # feels instant regardless of how long the pipelines take to release.
         if hasattr(self, "_paint_timer"):
             self._paint_timer.stop()
+        self.hide()
 
         self._stop_stream_pipelines()
         self._cleanup_engine()
 
-        print("[INFO] Shutdown complete")
         event.accept()
+        QtWidgets.QApplication.quit()
 
 
 # ===== Config loading and app startup =====
@@ -1033,6 +1054,25 @@ def main() -> None:  # pragma: no cover - entry point
     # the configured CPU cluster, auto-detected from per-core max frequency.
     cpu_affinity.apply_affinity(str(config.get("cpu_affinity", "performance")))
 
+    # Lock CPU/GPU clocks high so playback is smooth from the first frame instead
+    # of waiting several seconds for the ondemand DVFS governors to ramp up.
+    # Best-effort; restored on exit. Disable with top-level perf_mode: false.
+    perf_enabled = bool(config.get("perf_mode", True))
+    perf_saved: Dict[str, str] = {}
+    if perf_enabled:
+        perf_saved = perf_mode.enable_performance()
+
+    # Restore the governors and exit immediately on Ctrl-C / SIGTERM so a signal
+    # kill never leaves the board pinned to performance (and so Ctrl-C also quits
+    # the demo right away).
+    def _on_signal(signum, _frame):  # pragma: no cover - signal glue
+        if perf_saved:
+            perf_mode.restore(perf_saved)
+        os._exit(0)
+
+    signal.signal(signal.SIGINT, _on_signal)
+    signal.signal(signal.SIGTERM, _on_signal)
+
     app = QtWidgets.QApplication(sys.argv)
 
     # Apply dark theme
@@ -1058,7 +1098,29 @@ def main() -> None:  # pragma: no cover - entry point
     win.resize(1280, 720)
     win.show()
 
-    sys.exit(app.exec())
+    # Let the Python interpreter wake periodically so the SIGINT/SIGTERM handlers
+    # above are actually delivered while Qt's C++ event loop is running.
+    _signal_timer = QtCore.QTimer()
+    _signal_timer.start(200)
+    _signal_timer.timeout.connect(lambda: None)
+
+    rc = app.exec()
+
+    # The window is already gone; give the background pipeline-teardown threads a
+    # short, bounded grace period to release the NPU/VPU cleanly, restore the DVFS
+    # governors, then force-exit so a wedged GStreamer NULL transition can never
+    # keep the process alive (which is what previously required a manual kill).
+    deadline = time.monotonic() + 2.0
+    for t in getattr(win, "_shutdown_threads", []):
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            t.join(timeout=remaining)
+    if perf_saved:
+        perf_mode.restore(perf_saved)
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(rc if isinstance(rc, int) else 0)
 
 
 if __name__ == "__main__":  # pragma: no cover
