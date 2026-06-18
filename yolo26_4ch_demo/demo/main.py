@@ -1096,6 +1096,13 @@ def main() -> None:  # pragma: no cover - entry point
 
     win = MainWindow(config)
     win.resize(1280, 720)
+    warmup_sec = float(config.get("startup_warmup_sec", 6.0))
+    if warmup_sec > 0:
+        print(f"[INFO] Warming up pipelines for {warmup_sec:.1f}s before show...", flush=True)
+        deadline = time.monotonic() + warmup_sec
+        while time.monotonic() < deadline:
+            app.processEvents(QtCore.QEventLoop.AllEvents, 20)
+            time.sleep(0.02)
     win.show()
 
     # Let the Python interpreter wake periodically so the SIGINT/SIGTERM handlers

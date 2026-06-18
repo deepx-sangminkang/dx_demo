@@ -57,6 +57,12 @@ cpu_affinity: "performance"
 # system governors untouched.
 perf_mode: true
 
+# Keep the window hidden for a short warm-up period so the user-visible start
+# is already stable/smooth (RK3588 decode/NPU paths can be jerky for a few
+# seconds right after launch while caches/threads settle). Set to 0 to show
+# immediately.
+startup_warmup_sec: 6.0
+
 
 # Rendering backend for the 2x2 tile display:
 #   auto   : use the Mali GPU (OpenGL) when available, else CPU QPainter (default)

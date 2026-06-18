@@ -91,6 +91,10 @@ class StreamPipeline:
         self._pace_last_pts: Optional[int] = None
         # Cap a single pacing sleep so a bad/huge PTS gap can never freeze a tile.
         self._PACE_MAX_SLEEP = 0.5
+        # If we are this far behind the PTS schedule, do not "catch up" by
+        # running a burst of frames (which looks like stop/play jitter). Instead
+        # re-anchor to "now" so playback remains smooth from startup.
+        self._PACE_LATE_RESET = 0.12
         # Set by begin_stop(): makes the streaming thread stop pacing-sleeping so
         # it can exit promptly during shutdown instead of holding up the join.
         self._stopping = False
@@ -293,6 +297,10 @@ class StreamPipeline:
         self._pace_last_pts = pts
         target = self._pace_anchor_wall + (pts - self._pace_anchor_pts) / 1e9
         delay = target - self._monotonic()
+        if delay < -self._PACE_LATE_RESET:
+            self._pace_anchor_wall = now
+            self._pace_anchor_pts = pts
+            return
         if delay > 0:
             self._sleep(min(delay, self._PACE_MAX_SLEEP))
 

@@ -536,6 +536,18 @@ def test_pace_no_sleep_when_already_behind():
     assert sleeps == []
 
 
+def test_pace_reanchors_when_far_behind_to_avoid_burst_catchup():
+    clock, sleeps = {"t": 1000.0}, []
+    pipe = _pace_pipe(clock, sleeps)
+    pipe._pace(_FakeBuf(pts=0))
+    # far behind schedule (> _PACE_LATE_RESET): should re-anchor to now
+    clock["t"] = 1001.0
+    pipe._pace(_FakeBuf(pts=33_000_000))
+    assert sleeps == []
+    assert abs(pipe._pace_anchor_wall - 1001.0) < 1e-9
+    assert pipe._pace_anchor_pts == 33_000_000
+
+
 def test_pace_resets_anchor_on_loop_seam():
     clock, sleeps = {"t": 1000.0}, []
     pipe = _pace_pipe(clock, sleeps)
