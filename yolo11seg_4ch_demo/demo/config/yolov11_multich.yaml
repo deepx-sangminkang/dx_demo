@@ -1,6 +1,15 @@
 
 model: "assets/models/yolo11s-seg_optim.dxnn"
 
+# Lock CPU/GPU clocks high at startup so playback is smooth from frame one
+# instead of waiting for ondemand governors to ramp up. Best-effort and
+# restored on exit.
+perf_mode: true
+
+# Keep window hidden for a short warm-up period so visible playback starts
+# already stable/smooth. Set 0.0 to show immediately.
+startup_warmup_sec: 6.0
+
 workers:
   preprocess: 1
   wait: 1

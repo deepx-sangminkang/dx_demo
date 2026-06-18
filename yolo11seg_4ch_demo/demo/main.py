@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import os
+import signal
 import sys
 import threading
 import queue
@@ -26,6 +28,7 @@ import yaml
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from demo.engine import YOLOv11Engine
+from demo import perf_mode
 from demo.workers import (
     CaptureThread,
     preprocess_worker,
@@ -168,6 +171,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._paint_timer = QtCore.QTimer(self)
         self._paint_timer.timeout.connect(self._on_paint_timer)
         self._paint_timer.start(33)  # 33 ms interval ~= 30 FPS
+        self._shutting_down = False
+        self._shutdown_thread: Optional[threading.Thread] = None
+
+        # Quit on Q or Esc even when focus is inside child widgets.
+        for key in (QtCore.Qt.Key_Q, QtCore.Qt.Key_Escape):
+            sc = QtGui.QShortcut(QtGui.QKeySequence(key), self)
+            sc.setContext(QtCore.Qt.ApplicationShortcut)
+            sc.activated.connect(self.close)
 
         # Build the central 2x2 layout
         central = QtWidgets.QWidget(self)
@@ -740,18 +751,43 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "engine") and self.engine:
             del self.engine
 
+    def _shutdown_runtime(self) -> None:
+        """Run heavy shutdown work off the GUI thread."""
+
+        try:
+            self.stop_event.set()
+            self._stop_capture_threads()
+            self._stop_worker_threads()
+            self._cleanup_engine()
+        finally:
+            print("[INFO] Shutdown complete")
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:  # pragma: no cover
+        """Quit the demo when the user presses Q or Esc."""
+
+        if event.key() in (QtCore.Qt.Key_Q, QtCore.Qt.Key_Escape):
+            self.close()
+            return
+        super().keyPressEvent(event)
+
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # pragma: no cover
-        """Clean up workers and capture threads when the window closes."""
+        """Close immediately, then tear workers down in the background."""
+        if self._shutting_down:
+            event.accept()
+            return
+        self._shutting_down = True
         print("[INFO] Shutdown started...")
 
-        self.stop_event.set()
+        if hasattr(self, "_paint_timer"):
+            self._paint_timer.stop()
+        self.hide()
 
-        self._stop_capture_threads()
-        self._stop_worker_threads()
-        self._cleanup_engine()
-
-        print("[INFO] Shutdown complete")
+        self._shutdown_thread = threading.Thread(
+            target=self._shutdown_runtime, daemon=True
+        )
+        self._shutdown_thread.start()
         event.accept()
+        QtWidgets.QApplication.quit()
 
 
 # ===== Config loading and app startup =====
@@ -773,6 +809,21 @@ def main() -> None:  # pragma: no cover - entry point
         sys.exit(1)
 
     config = load_config(str(default_cfg))
+
+    # Keep startup smooth from frame one: pin CPU/GPU clocks high (best-effort)
+    # and restore them on exit. Disable with top-level perf_mode: false.
+    perf_enabled = bool(config.get("perf_mode", True))
+    perf_saved: Dict[str, str] = {}
+    if perf_enabled:
+        perf_saved = perf_mode.enable_performance()
+
+    def _on_signal(_signum, _frame):  # pragma: no cover - signal glue
+        if perf_saved:
+            perf_mode.restore(perf_saved)
+        os._exit(0)
+
+    signal.signal(signal.SIGINT, _on_signal)
+    signal.signal(signal.SIGTERM, _on_signal)
 
     # cv2.setNumThreads(1)
 
@@ -799,9 +850,28 @@ def main() -> None:  # pragma: no cover - entry point
 
     win = MainWindow(config)
     win.resize(1280, 720)
+    warmup_sec = float(config.get("startup_warmup_sec", 6.0))
+    if warmup_sec > 0:
+        print(f"[INFO] Warming up pipelines for {warmup_sec:.1f}s before show...", flush=True)
+        deadline = time.monotonic() + warmup_sec
+        while time.monotonic() < deadline:
+            app.processEvents(QtCore.QEventLoop.AllEvents, 20)
+            time.sleep(0.02)
     win.show()
 
-    sys.exit(app.exec())
+    signal_timer = QtCore.QTimer()
+    signal_timer.start(200)
+    signal_timer.timeout.connect(lambda: None)
+
+    rc = app.exec()
+    shutdown_thread = getattr(win, "_shutdown_thread", None)
+    if shutdown_thread is not None:
+        shutdown_thread.join(timeout=2.0)
+    if perf_saved:
+        perf_mode.restore(perf_saved)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(rc if isinstance(rc, int) else 0)
 
 
 if __name__ == "__main__":  # pragma: no cover
