@@ -1,0 +1,634 @@
+"""Unit tests for StreamPipeline (sample dispatch wiring).
+
+The real GStreamer runtime / appsink is board-only, so we inject a fake ``gst``
+module, a fake appsink sample, and a fake sample extractor to test that a new
+sample drives both the frame callback and the detection callback correctly.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+
+from demo import stream_pipeline as sp
+
+
+class _FlowReturn:
+    OK = "OK"
+
+
+class _FakeGst:
+    FlowReturn = _FlowReturn
+
+
+class _FakeBridge:
+    def __init__(self, det):
+        self._det = det
+        self.seen_buffer = None
+
+    def detections_for_buffer(self, buf):
+        self.seen_buffer = buf
+        return self._det
+
+
+def test_on_new_sample_dispatches_frame_and_detections():
+    frame = np.zeros((8, 8, 3), dtype=np.uint8)
+    buffer = object()
+    det = np.ones((2, 6), dtype=np.float32)
+    bridge = _FakeBridge(det)
+
+    frames, dets = [], []
+
+    pipe = sp.StreamPipeline(
+        channel_id=3,
+        pipeline_str="fakesrc ! appsink name=s",
+        bridge=bridge,
+        frame_callback=lambda ch, f: frames.append((ch, f)),
+        detection_callback=lambda ch, d: dets.append((ch, d)),
+        gst=_FakeGst,
+        sample_extractor=lambda sample: (frame, buffer),
+    )
+
+    ret = pipe._on_new_sample(appsink_with_sample=object())
+
+    assert ret == _FlowReturn.OK
+    assert frames == [(3, frame)]
+    assert len(dets) == 1 and dets[0][0] == 3
+    np.testing.assert_array_equal(dets[0][1], det)
+    assert bridge.seen_buffer is buffer
+
+
+def test_on_new_sample_no_frame_is_noop():
+    bridge = _FakeBridge(np.zeros((0, 6), dtype=np.float32))
+    frames, dets = [], []
+    pipe = sp.StreamPipeline(
+        channel_id=0,
+        pipeline_str="x",
+        bridge=bridge,
+        frame_callback=lambda ch, f: frames.append((ch, f)),
+        detection_callback=lambda ch, d: dets.append((ch, d)),
+        gst=_FakeGst,
+        sample_extractor=lambda sample: (None, None),
+    )
+    ret = pipe._on_new_sample(appsink_with_sample=object())
+    assert ret == _FlowReturn.OK
+    assert frames == [] and dets == []
+
+
+def test_on_new_sample_swallows_callback_errors():
+    bridge = _FakeBridge(np.zeros((1, 6), dtype=np.float32))
+    frame = np.zeros((2, 2, 3), dtype=np.uint8)
+
+    def boom(ch, f):
+        raise RuntimeError("draw failed")
+
+    pipe = sp.StreamPipeline(
+        channel_id=1,
+        pipeline_str="x",
+        bridge=bridge,
+        frame_callback=boom,
+        detection_callback=lambda ch, d: None,
+        gst=_FakeGst,
+        sample_extractor=lambda sample: (frame, object()),
+    )
+    # Must not raise out of the GStreamer callback.
+    ret = pipe._on_new_sample(appsink_with_sample=object())
+    assert ret == _FlowReturn.OK
+
+
+def _make_pipe(channel_id=0, error_callback=None):
+    return sp.StreamPipeline(
+        channel_id=channel_id,
+        pipeline_str="x",
+        bridge=_FakeBridge(np.zeros((0, 6), dtype=np.float32)),
+        frame_callback=lambda ch, f: None,
+        detection_callback=lambda ch, d: None,
+        gst=_FakeGst,
+        sample_extractor=lambda sample: (None, None),
+        error_callback=error_callback,
+    )
+
+
+def test_format_bus_error_includes_channel_source_and_debug():
+    pipe = _make_pipe(channel_id=2)
+    text = pipe._format_bus_error("dxinfer0", "could not load model", "gstdxinfer.c(120)")
+    assert "Channel 2" in text
+    assert "dxinfer0" in text
+    assert "could not load model" in text
+    assert "gstdxinfer.c(120)" in text
+
+
+def test_dispatch_bus_error_invokes_error_callback():
+    seen = []
+    pipe = _make_pipe(channel_id=5, error_callback=lambda ch, msg: seen.append((ch, msg)))
+    pipe._dispatch_bus_error("dxpostprocess0", "lib not found", None)
+    assert len(seen) == 1
+    assert seen[0][0] == 5
+    assert "lib not found" in seen[0][1]
+
+
+def test_dispatch_bus_error_without_callback_does_not_raise():
+    pipe = _make_pipe(channel_id=0, error_callback=None)
+    # Should log/print but never raise even with no callback wired.
+    pipe._dispatch_bus_error("src", "boom", "dbg")
+
+
+def test_should_log_sample_first_n_then_periodic():
+    pipe = _make_pipe()
+    assert pipe._should_log_sample(1) is True
+    assert pipe._should_log_sample(3) is True
+    assert pipe._should_log_sample(4) is False
+    assert pipe._should_log_sample(300) is True
+    assert pipe._should_log_sample(301) is False
+
+
+def test_on_new_sample_logs_detection_diagnostics(capsys):
+    frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    bridge = _FakeBridge(np.ones((2, 6), dtype=np.float32))
+    bridge.last_meta_present = True
+    pipe = sp.StreamPipeline(
+        channel_id=1,
+        pipeline_str="x",
+        bridge=bridge,
+        frame_callback=lambda ch, f: None,
+        detection_callback=lambda ch, d: None,
+        gst=_FakeGst,
+        sample_extractor=lambda sample: (frame, object()),
+    )
+    pipe._on_new_sample(appsink_with_sample=object())
+    err = capsys.readouterr().err
+    assert "DXS-DEBUG" in err
+    assert "detections=2" in err
+    assert "frame_meta_present=True" in err
+
+
+def test_diagnostics_flags_reused_boxes(capsys):
+    appsink_buf = _PtsBuffer(0)
+    bridge = _FakeBridge(np.zeros((0, 6), dtype=np.float32))
+    bridge.last_meta_present = False
+    pipe = sp.StreamPipeline(
+        channel_id=1,
+        pipeline_str="x",
+        bridge=bridge,
+        frame_callback=lambda ch, f: None,
+        detection_callback=lambda ch, d: None,
+        gst=_FakeGst,
+        sample_extractor=lambda sample: (np.zeros((2, 2, 3), np.uint8), appsink_buf),
+    )
+    good = np.ones((3, 6), dtype=np.float32)
+    pipe._stash_meta(0, good)
+    pipe._on_new_sample(appsink_with_sample=object())  # stash hit, no note
+    pipe._on_new_sample(appsink_with_sample=object())  # miss -> reused
+    lines = [ln for ln in capsys.readouterr().err.splitlines() if "DXS-DEBUG" in ln]
+    assert "reused prev boxes" not in lines[0]
+    assert "frame_meta_present=False" in lines[1]
+    assert "reused prev boxes" in lines[1]
+
+
+class _PtsBuffer:
+    """Minimal stand-in for a GstBuffer exposing a PTS."""
+
+    def __init__(self, pts):
+        self.pts = pts
+
+
+def test_buffer_pts_returns_none_for_missing_or_invalid():
+    pipe = _make_pipe()
+    assert pipe._buffer_pts(object()) is None
+    # CLOCK_TIME_NONE-style sentinel is treated as "no usable PTS".
+    pipe._gst.CLOCK_TIME_NONE = 18446744073709551615
+    assert pipe._buffer_pts(_PtsBuffer(18446744073709551615)) is None
+    assert pipe._buffer_pts(_PtsBuffer(1000)) == 1000
+
+
+def test_stash_and_take_meta_roundtrip():
+    pipe = _make_pipe()
+    det = np.ones((3, 6), dtype=np.float32)
+    pipe._stash_meta(500, det)
+    taken = pipe._take_meta(500)
+    np.testing.assert_array_equal(taken, det)
+    # Once taken it is gone.
+    assert pipe._take_meta(500) is None
+
+
+def test_take_meta_drops_older_stale_entries():
+    pipe = _make_pipe()
+    pipe._stash_meta(10, "a")
+    pipe._stash_meta(20, "b")
+    pipe._stash_meta(30, "c")
+    # Consuming PTS 20 must also evict the older PTS 10 (already-dropped frame).
+    assert pipe._take_meta(20) == "b"
+    assert pipe._take_meta(10) is None
+    assert pipe._take_meta(30) == "c"
+
+
+def test_stash_is_bounded():
+    pipe = _make_pipe()
+    pipe._META_STASH_MAX = 5
+    for i in range(20):
+        pipe._stash_meta(i, i)
+    assert len(pipe._meta_stash) == 5
+    # Oldest entries evicted; newest retained.
+    assert pipe._take_meta(0) is None
+    assert pipe._take_meta(19) == 19
+
+
+def test_on_new_sample_prefers_pts_stash_over_appsink_buffer():
+    frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    appsink_buf = _PtsBuffer(700)
+    bridge = _FakeBridge(np.zeros((0, 6), dtype=np.float32))
+    stashed = np.ones((4, 6), dtype=np.float32)
+
+    dets = []
+    pipe = sp.StreamPipeline(
+        channel_id=0,
+        pipeline_str="x",
+        bridge=bridge,
+        frame_callback=lambda ch, f: None,
+        detection_callback=lambda ch, d: dets.append(d),
+        gst=_FakeGst,
+        sample_extractor=lambda sample: (frame, appsink_buf),
+    )
+    # Meta captured on the pre-videoconvert pad, keyed by the same PTS.
+    pipe._stash_meta(700, stashed)
+
+    pipe._on_new_sample(appsink_with_sample=object())
+
+    np.testing.assert_array_equal(dets[0], stashed)
+    # The appsink buffer must NOT have been consulted when a stash hit exists.
+    assert bridge.seen_buffer is None
+
+
+def test_on_new_sample_falls_back_to_bridge_without_stash():
+    frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    appsink_buf = _PtsBuffer(700)
+    det = np.ones((1, 6), dtype=np.float32)
+    bridge = _FakeBridge(det)
+
+    dets = []
+    pipe = sp.StreamPipeline(
+        channel_id=0,
+        pipeline_str="x",
+        bridge=bridge,
+        frame_callback=lambda ch, f: None,
+        detection_callback=lambda ch, d: dets.append(d),
+        gst=_FakeGst,
+        sample_extractor=lambda sample: (frame, appsink_buf),
+    )
+
+    pipe._on_new_sample(appsink_with_sample=object())
+
+    np.testing.assert_array_equal(dets[0], det)
+    assert bridge.seen_buffer is appsink_buf
+
+class _SeekFlags:
+    FLUSH = 1
+    KEY_UNIT = 2
+    SEGMENT = 4
+
+
+class _SeekType:
+    SET = "set"
+
+
+class _Format:
+    TIME = "time"
+
+
+class _SeekGst:
+    FlowReturn = _FlowReturn
+    SeekFlags = _SeekFlags
+    SeekType = _SeekType
+    Format = _Format
+
+
+class _FakePipeline:
+    def __init__(self):
+        self.seeks = []
+
+    def seek(self, rate, fmt, flags, start_type, start, stop_type, stop):
+        self.seeks.append((rate, fmt, flags, start_type, start, stop_type, stop))
+        return True
+
+
+def test_should_loop_true_when_enabled_with_pipeline():
+    pipe = _make_pipe()
+    pipe.loop = True
+    pipe._pipeline = _FakePipeline()
+    assert pipe._should_loop() is True
+
+
+def test_should_loop_false_when_disabled():
+    pipe = _make_pipe()
+    pipe.loop = False
+    pipe._pipeline = _FakePipeline()
+    assert pipe._should_loop() is False
+
+
+def test_should_loop_false_without_pipeline():
+    pipe = _make_pipe()
+    pipe.loop = True
+    pipe._pipeline = None
+    assert pipe._should_loop() is False
+
+
+def test_should_arm_segment_loop_only_once():
+    pipe = _make_pipe()
+    pipe.loop = True
+    pipe._pipeline = _FakePipeline()
+    assert pipe._segment_armed is False
+    assert pipe._should_arm_segment_loop() is True
+    pipe._segment_armed = True
+    assert pipe._should_arm_segment_loop() is False
+
+
+def test_should_arm_segment_loop_false_when_not_looping():
+    pipe = _make_pipe()
+    pipe.loop = False
+    pipe._pipeline = _FakePipeline()
+    assert pipe._should_arm_segment_loop() is False
+
+
+def test_segment_seek_flush_arms_segment_loop():
+    pipe = _make_pipe()
+    pipe._gst = _SeekGst
+    pipe._pipeline = _FakePipeline()
+    pipe._segment_seek(flush=True)
+    assert pipe._pipeline.seeks == [
+        (
+            1.0,
+            _Format.TIME,
+            _SeekFlags.FLUSH | _SeekFlags.SEGMENT,
+            _SeekType.SET,
+            0,
+            _SeekType.SET,
+            -1,
+        )
+    ]
+
+
+def test_segment_seek_non_flush_continues_loop():
+    pipe = _make_pipe()
+    pipe._gst = _SeekGst
+    pipe._pipeline = _FakePipeline()
+    pipe._segment_seek(flush=False)
+    # The continuation seek must NOT flush (gapless), only SEGMENT.
+    assert pipe._pipeline.seeks == [
+        (
+            1.0,
+            _Format.TIME,
+            _SeekFlags.SEGMENT,
+            _SeekType.SET,
+            0,
+            _SeekType.SET,
+            -1,
+        )
+    ]
+
+
+def test_segment_seek_clears_stale_meta_stash():
+    # A loop seek restarts the PTS timeline, so old-segment metadata keyed by a
+    # PTS that the new segment will reuse must be dropped to avoid mismatches.
+    pipe = _make_pipe()
+    pipe._gst = _SeekGst
+    pipe._pipeline = _FakePipeline()
+    pipe._stash_meta(0, "stale")
+    pipe._stash_meta(1000, "stale2")
+    pipe._segment_seek(flush=False)
+    assert pipe._take_meta(0) is None
+    assert pipe._take_meta(1000) is None
+
+
+def test_detections_reused_for_loop_boundary_miss():
+    # At the loop seam one appsink frame's PTS can desync from the stash; reuse
+    # the last known detections so it does not flash an empty overlay.
+    appsink_buf = _PtsBuffer(0)
+    bridge = _FakeBridge(np.zeros((0, 6), dtype=np.float32))
+    bridge.last_meta_present = False
+    pipe = sp.StreamPipeline(
+        channel_id=0,
+        pipeline_str="x",
+        bridge=bridge,
+        frame_callback=lambda ch, f: None,
+        detection_callback=lambda ch, d: None,
+        gst=_FakeGst,
+        sample_extractor=lambda sample: (None, appsink_buf),
+    )
+    good = np.ones((3, 6), dtype=np.float32)
+    pipe._stash_meta(0, good)
+    # First frame matches the stash and is remembered.
+    np.testing.assert_array_equal(pipe._detections_for_sample(appsink_buf), good)
+    # Next frame misses the stash (boundary); previous detections are reused.
+    np.testing.assert_array_equal(pipe._detections_for_sample(appsink_buf), good)
+
+
+def test_detections_reuse_gives_up_after_streak():
+    appsink_buf = _PtsBuffer(0)
+    empty = np.zeros((0, 6), dtype=np.float32)
+    bridge = _FakeBridge(empty)
+    bridge.last_meta_present = False
+    pipe = sp.StreamPipeline(
+        channel_id=0,
+        pipeline_str="x",
+        bridge=bridge,
+        frame_callback=lambda ch, f: None,
+        detection_callback=lambda ch, d: None,
+        gst=_FakeGst,
+        sample_extractor=lambda sample: (None, appsink_buf),
+    )
+    good = np.ones((3, 6), dtype=np.float32)
+    pipe._stash_meta(0, good)
+    pipe._detections_for_sample(appsink_buf)  # stash hit, remembers good
+    reused = 0
+    for _ in range(pipe._MAX_META_REUSE + 2):
+        out = pipe._detections_for_sample(appsink_buf)
+        if out is good:
+            reused += 1
+    # Reuse is bounded: it must stop after _MAX_META_REUSE misses in a row.
+    assert reused == pipe._MAX_META_REUSE
+
+
+def test_is_stalled_false_when_not_looping():
+    pipe = _make_pipe()
+    pipe.loop = False
+    pipe._pipeline = _FakePipeline()
+    pipe._last_sample_mono = 0.0
+    assert pipe._is_stalled(now=10_000.0) is False
+
+
+def test_is_stalled_false_before_first_frame():
+    pipe = _make_pipe()
+    pipe.loop = True
+    pipe._pipeline = _FakePipeline()
+    pipe._last_sample_mono = None
+    assert pipe._is_stalled(now=10_000.0) is False
+
+
+def test_is_stalled_false_when_recent_frame():
+    pipe = _make_pipe()
+    pipe.loop = True
+    pipe._pipeline = _FakePipeline()
+    pipe._last_sample_mono = 100.0
+    assert pipe._is_stalled(now=100.0 + pipe._STALL_TIMEOUT - 0.1) is False
+
+
+def test_is_stalled_true_when_looping_and_no_frames():
+    pipe = _make_pipe()
+    pipe.loop = True
+    pipe._pipeline = _FakePipeline()
+    pipe._last_sample_mono = 100.0
+    assert pipe._is_stalled(now=100.0 + pipe._STALL_TIMEOUT + 0.1) is True
+
+
+def test_note_sample_time_updates_timestamp():
+    pipe = _make_pipe()
+    assert pipe._last_sample_mono is None
+    pipe._note_sample_time()
+    assert pipe._last_sample_mono is not None
+
+
+# ----- native-fps pacing (host-testable) -----
+
+
+class _FakeBuf:
+    def __init__(self, pts):
+        self.pts = pts
+
+
+def _pace_pipe(clock, sleeps):
+    return sp.StreamPipeline(
+        channel_id=0,
+        pipeline_str="x",
+        bridge=_FakeBridge(np.zeros((0, 6), dtype=np.float32)),
+        frame_callback=lambda ch, f: None,
+        detection_callback=lambda ch, d: None,
+        gst=_FakeGst,
+        sample_extractor=lambda sample: (None, None),
+        pace_fps=True,
+        monotonic=lambda: clock["t"],
+        sleep=lambda d: sleeps.append(d),
+    )
+
+
+def test_pace_first_frame_sets_anchor_without_sleeping():
+    clock, sleeps = {"t": 1000.0}, []
+    pipe = _pace_pipe(clock, sleeps)
+    pipe._pace(_FakeBuf(pts=0))
+    assert sleeps == []
+    assert pipe._pace_anchor_pts == 0
+
+
+def test_pace_sleeps_until_pts_target():
+    clock, sleeps = {"t": 1000.0}, []
+    pipe = _pace_pipe(clock, sleeps)
+    pipe._pace(_FakeBuf(pts=0))            # anchor at wall=1000, pts=0
+    # next frame one second of PTS later, but no wall time has elapsed -> sleep ~1s
+    pipe._pace(_FakeBuf(pts=1_000_000_000))
+    assert len(sleeps) == 1
+    assert abs(sleeps[0] - pipe._PACE_MAX_SLEEP) < 1e-9  # capped at PACE_MAX_SLEEP
+
+
+def test_pace_no_sleep_when_already_behind():
+    clock, sleeps = {"t": 1000.0}, []
+    pipe = _pace_pipe(clock, sleeps)
+    pipe._pace(_FakeBuf(pts=0))
+    clock["t"] = 1005.0  # wall jumped ahead of the 0.033s PTS target
+    pipe._pace(_FakeBuf(pts=33_000_000))
+    assert sleeps == []
+
+
+def test_pace_reanchors_when_far_behind_to_avoid_burst_catchup():
+    clock, sleeps = {"t": 1000.0}, []
+    pipe = _pace_pipe(clock, sleeps)
+    pipe._pace(_FakeBuf(pts=0))
+    # far behind schedule (> _PACE_LATE_RESET): should re-anchor to now
+    clock["t"] = 1001.0
+    pipe._pace(_FakeBuf(pts=33_000_000))
+    assert sleeps == []
+    assert abs(pipe._pace_anchor_wall - 1001.0) < 1e-9
+    assert pipe._pace_anchor_pts == 33_000_000
+
+
+def test_pace_resets_anchor_on_loop_seam():
+    clock, sleeps = {"t": 1000.0}, []
+    pipe = _pace_pipe(clock, sleeps)
+    pipe._pace(_FakeBuf(pts=0))
+    pipe._pace(_FakeBuf(pts=33_000_000))   # advances last_pts
+    sleeps.clear()
+    # loop seam: PTS jumps backwards -> re-anchor, must not sleep a clip length
+    pipe._pace(_FakeBuf(pts=0))
+    assert sleeps == []
+    assert pipe._pace_anchor_pts == 0
+
+
+def test_pace_ignores_invalid_pts():
+    clock, sleeps = {"t": 1000.0}, []
+    pipe = _pace_pipe(clock, sleeps)
+    pipe._gst.CLOCK_TIME_NONE = 18446744073709551615
+    pipe._pace(_FakeBuf(pts=pipe._gst.CLOCK_TIME_NONE))
+    assert sleeps == []
+    assert pipe._pace_anchor_wall is None
+
+
+# ----- shutdown (begin_stop / join_stop) -----
+
+
+class _FakeState:
+    NULL = "NULL"
+
+
+class _FakePipelineState:
+    def __init__(self):
+        self.state = None
+
+    def set_state(self, s):
+        self.state = s
+
+
+class _FakeLoop:
+    def __init__(self):
+        self.quit_called = False
+
+    def quit(self):
+        self.quit_called = True
+
+
+class _FakeThread:
+    def __init__(self):
+        self.joined_with = None
+
+    def join(self, timeout=None):
+        self.joined_with = timeout
+
+
+def _stoppable_pipe():
+    pipe = _pace_pipe({"t": 0.0}, [])
+    pipe._gst.State = _FakeState
+    pipe._pipeline = _FakePipelineState()
+    pipe._loop = _FakeLoop()
+    pipe._thread = _FakeThread()
+    return pipe
+
+
+def test_begin_stop_requests_null_and_quit_without_joining():
+    pipe = _stoppable_pipe()
+    pipe.begin_stop()
+    assert pipe._stopping is True
+    assert pipe._pipeline.state == _FakeState.NULL
+    assert pipe._loop.quit_called is True
+    assert pipe._thread.joined_with is None  # join deferred to join_stop
+
+
+def test_join_stop_joins_loop_thread():
+    pipe = _stoppable_pipe()
+    pipe.begin_stop()
+    pipe.join_stop(timeout=1.5)
+    assert pipe._thread.joined_with == 1.5
+
+
+def test_pace_bails_out_while_stopping():
+    clock, sleeps = {"t": 1000.0}, []
+    pipe = _pace_pipe(clock, sleeps)
+    pipe._pace(_FakeBuf(pts=0))               # set the anchor
+    pipe._stopping = True
+    pipe._pace(_FakeBuf(pts=10_000_000_000))  # huge future PTS, but stopping
+    assert sleeps == []                       # must not sleep during shutdown

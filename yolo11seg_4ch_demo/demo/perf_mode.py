@@ -1,4 +1,22 @@
-"""Pin CPU/GPU clocks high so the demo is smooth from the very first frame."""
+"""Pin CPU/GPU clocks high so the demo is smooth from the very first frame.
+
+RK3588 boots with ondemand-style DVFS governors (CPU ``ondemand``, Mali GPU
+``simple_ondemand``) that keep the clocks idling low and only ramp them up after
+sustained load. That ramp is exactly why the demo looks janky for the first
+several seconds and then smooths out: at startup the GPU sits at its minimum
+(~300 MHz of 1 GHz) and the CPU at a low OPP, so rendering and the Python/Qt
+work can't keep up until the governors catch up.
+
+Forcing the CPU scaling governor to ``performance`` and pinning the GPU devfreq
+to its maximum frequency removes that warm-up lag, so playback is smooth
+immediately.
+
+The privileged sysfs writes are best-effort: a direct write is tried first, then
+a passwordless ``sudo -n tee`` fallback. Any failure is non-fatal -- the demo
+still runs, just with the default warm-up ramp. The original values are returned
+so they can be restored on exit, and all I/O is injected so the planning logic is
+unit-testable on any host.
+"""
 
 from __future__ import annotations
 
@@ -26,7 +44,7 @@ def _default_read(path: str) -> Optional[str]:
 
 
 def _default_write(path: str, value: str) -> bool:
-    """Write ``value`` to ``path``; try direct write then ``sudo -n tee``."""
+    """Write ``value`` to ``path``; try a direct write then ``sudo -n tee``."""
 
     try:
         with open(path, "w") as fh:
@@ -48,8 +66,16 @@ def _default_write(path: str, value: str) -> bool:
         return False
 
 
-def plan_performance(read: ReadFn, glob_fn: GlobFn) -> Dict[str, str]:
-    """Return a ``{sysfs_path: target_value}`` plan to pin clocks high."""
+def plan_performance(
+    read: ReadFn,
+    glob_fn: GlobFn,
+) -> Dict[str, str]:
+    """Return a ``{sysfs_path: target_value}`` map to pin clocks high.
+
+    CPU policies switch to the ``performance`` governor; the GPU devfreq (which
+    has no ``performance`` governor on RK3588) is pinned by writing its
+    ``max_freq`` into ``min_freq``. Only nodes that need changing are included.
+    """
 
     plan: Dict[str, str] = {}
     for path in sorted(glob_fn(CPU_GOVERNOR_GLOB)):
@@ -63,6 +89,7 @@ def plan_performance(read: ReadFn, glob_fn: GlobFn) -> Dict[str, str]:
         cur_min = read(min_path)
         if max_freq is not None and cur_min is not None and cur_min != max_freq:
             plan[min_path] = max_freq
+
     return plan
 
 
@@ -72,7 +99,7 @@ def enable_performance(
     glob_fn: GlobFn = _glob.glob,
     log: Optional[LogFn] = None,
 ) -> Dict[str, str]:
-    """Pin CPU/GPU clocks high; return originals for :func:`restore`."""
+    """Pin CPU/GPU clocks high; return the original values for :func:`restore`."""
 
     log = log or (lambda msg: print(msg, flush=True))
     plan = plan_performance(read, glob_fn)
@@ -102,12 +129,14 @@ def enable_performance(
     return saved
 
 
-def restore(saved: Dict[str, str], write: WriteFn = _default_write) -> None:
-    """Best-effort restore of values captured by :func:`enable_performance`."""
+def restore(
+    saved: Dict[str, str],
+    write: WriteFn = _default_write,
+) -> None:
+    """Best-effort restore of the values captured by :func:`enable_performance`."""
 
     for path, value in saved.items():
         try:
             write(path, value)
         except Exception:
             pass
-

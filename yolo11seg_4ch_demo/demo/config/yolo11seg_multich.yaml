@@ -1,0 +1,112 @@
+
+model: "assets/models/yolo26n-seg.dxnn"
+
+# This demo is dx_stream-only (no OpenCV). The native GStreamer pipeline runs
+#   decodebin (HW mppvideodec) -> dxpreprocess (RGA letterbox/resize) ->
+#   dxinfer (NPU) -> dxpostprocess -> [dxscale display downscale] ->
+#   dxosd (HW segmentation overlay) -> dxconvert/videoconvert (NV12->RGB) ->
+#   appsink
+# (mirrors the dx_stream run_yolo26n-seg.sh reference). Requires dx_stream +
+# pydxs installed (verify: gst-inspect-1.0 dxinfer && python -c "import pydxs").
+engine_backend: "dxstream"
+
+# Native dx_stream backend settings.
+dxstream:
+  # dxpostprocess decoder library for YOLO26 instance segmentation.
+  postprocess_library: "/usr/local/share/gstdxstream/lib/libpostprocess_yolo26seg.so"
+  postprocess_function: "PostProcess"
+  keep_ratio: true
+  pad_value: 114
+
+  # Render the segmentation overlay (masks + boxes) in the GStreamer pipeline
+  # with the HW `dxosd` element, exactly like the dx_stream run_yolo26n-seg.sh
+  # reference pipeline. The masks are baked into the frames before they reach
+  # Qt, which then just tiles them. Set false to deliver clean frames (no
+  # overlay). Default true.
+  osd: true
+
+  # NV12->RGB colour conversion backend for the display branch:
+  #   auto : use the RGA `dxconvert` element when available, else CPU
+  #          `videoconvert` (default).
+  #   rga  : force RGA `dxconvert` (falls back to CPU with a warning if missing).
+  #   cpu  : force CPU `videoconvert`.
+  color_convert: "auto"
+
+  # Pace each channel to its source video's native frame rate. Pacing is done
+  # in Python (backpressure in the appsink streaming thread), so it stays smooth
+  # AND loops seamlessly. true  -> smooth playback at the original fps, and the
+  # NPU/VPU do not waste work decoding faster than real time (default). false ->
+  # run flat out for max-throughput benchmarking.
+  sync_to_fps: true
+
+  # Display downscale (RGA `dxscale`): the frame delivered to Qt is resized to
+  # this resolution so the GUI only ever handles small RGB tiles, regardless of
+  # the source resolution (essential for 4K inputs, helpful for FHD). Detection
+  # boxes stay correct because they are read upstream in original-frame coords.
+  # Defaults to 960x540 (a quarter of FHD) when unset. Set display_downscale to
+  # false to deliver full-resolution frames instead.
+  # display_downscale: true
+  # display_width: 960
+  # display_height: 540
+
+# Pin the demo's hot threads to a CPU cluster auto-detected from per-core max
+# frequency. cluster:
+#   performance : the fastest cores (e.g. RK3588 A76 cpu4-7) - default.
+#   efficiency  : the power-efficient cores (e.g. RK3588 A55 cpu0-3).
+#   none        : do not set CPU affinity.
+cpu_affinity: "performance"
+
+# Lock the CPU/GPU clocks high at startup so playback is smooth from the very
+# first frame. RK3588 boots with ondemand-style DVFS governors that idle the
+# clocks low (the Mali GPU sits at ~300 MHz) and only ramp up after a few
+# seconds of load, which makes the demo janky for the first 5-10s. When true
+# (default), the CPU governor is set to 'performance' and the GPU is pinned to
+# its max frequency (best-effort; restored on exit). Set false to leave the
+# system governors untouched.
+perf_mode: true
+
+# Keep the window hidden for a short warm-up period so the user-visible start
+# is already stable/smooth (RK3588 decode/NPU paths can be jerky for a few
+# seconds right after launch while caches/threads settle). Set to 0 to show
+# immediately.
+startup_warmup_sec: 6.0
+
+
+# Rendering backend for the 2x2 tile display:
+#   auto   : use the Mali GPU (OpenGL) when available, else CPU QPainter (default)
+#   gpu    : force GPU rendering (falls back to CPU if OpenGL is unavailable)
+#   cpu    : force CPU QPainter rendering
+render_backend: "auto"
+
+channels:
+  - name: "ch1"
+    type: "video"
+    source: "assets/videos/cctv-city-road.mov"
+    enabled: true
+
+  - name: "ch2"
+    type: "video"
+    source: "assets/videos/dron-citry-road.mov"
+    enabled: true
+
+  - name: "ch3"
+    type: "video"
+    source: "assets/videos/carrierbag.mp4"
+    enabled: true
+
+  - name: "ch4"
+    type: "video"
+    source: "assets/videos/dance-group.mov"
+    enabled: true
+
+# rtsp example
+#  - name: "ch4"
+#    type: "rtsp"
+#    source: "rtsp://username:password@ip_address:port/stream"
+#    enabled: true
+
+# camera example
+#  - name: "ch4"
+#    type: "camera"
+#    source: 0
+#    enabled: true

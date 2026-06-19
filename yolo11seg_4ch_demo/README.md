@@ -1,23 +1,53 @@
 > Korean documentation: [README-ko.md](README-ko.md)
 
-# YOLOv11 Segmentation Multi-Channel Demo
+# YOLO26 Segmentation Multi-Channel Demo
 
-A multi-channel Qt demo application using the YOLOv11 segmentation model.
+A multi-channel Qt demo application using the YOLO26 instance **segmentation**
+model, built entirely on **dx_stream** (native GStreamer). There is **no OpenCV
+dependency**. It mirrors the dx_stream `run_yolo26n-seg.sh` reference pipeline:
+the segmentation masks are rendered in hardware by the `dxosd` element and the Qt
+front end composites the four overlaid streams into a 2x2 grid.
 
 ## Screenshot
 
-![YOLOv11 Segmentation Demo Screenshot](img/yolov11seg_4ch_demo_screenshot.png)
+![YOLO26 Segmentation Demo Screenshot](img/yolo26_4ch_demo_screenshot.png)
+
+## Architecture
+
+Each channel runs **one native dx_stream GStreamer pipeline**:
+
+```
+decodebin (HW mppvideodec)         # hardware video decode (VPU)
+  -> dxpreprocess                  # RGA letterbox / resize for the model
+  -> dxinfer                       # YOLO26-seg inference on the NPU
+  -> dxpostprocess                 # decode segmentation (libpostprocess_yolo26seg)
+  -> [dxscale]                     # RGA display downscale (e.g. 960x540)
+  -> dxosd                         # HW render of masks/boxes onto the (downscaled) frame
+  -> dxconvert | videoconvert      # NV12 -> RGB (RGA hardware when available)
+  -> appsink                       # overlaid frames handed to Qt
+```
+
+Inference and the segmentation overlay run entirely inside GStreamer (NPU + RGA).
+The Python side only receives small, already-overlaid RGB tiles and composites
+the 2x2 grid. Colour conversion and display downscale are offloaded to the
+**RGA** hardware, the 2x2 tiles can be composited on the **Mali GPU**, and each
+channel is paced to its source video's **native FPS** for smooth playback.
 
 ## Prerequisites
 
-Before running this project, **DX-RT** (DeepX Runtime) must be built and the `dx_engine` module must be importable in Python.
+This demo **requires** the dx_stream GStreamer plugin (`dxpreprocess` /
+`dxinfer` / `dxpostprocess` / `dxscale` / `dxconvert`) and the `pydxs` Python
+bindings, which are built on top of **DX-RT** (DeepX Runtime). There is no
+software fallback — if these are missing, startup aborts with a clear error.
 
-```python
-# The following must run without errors
-import dx_engine
+Verify they are present:
+
+```bash
+gst-inspect-1.0 dxinfer        # dx_stream plugin registered
+python -c "import pydxs"        # pydxs bindings importable
 ```
 
-Refer to the DX-RT project documentation for installation and build instructions.
+If either fails, install dx_stream (see below).
 
 ## Installation
 
@@ -28,58 +58,146 @@ Run the demo with:
 ```
 
 `run_demo.sh` automatically checks and installs what is missing before starting:
-1. Installs any missing Python dependencies (`requirements.txt`)
-2. Builds and installs the `dx-postprocess-seg` C++ extension if not already installed
-3. Downloads sample videos into `assets/videos/` if not present
+1. Installs any missing Python dependencies (`requirements.txt` — numpy,
+   PySide6, PyYAML, packaging; **no OpenCV**)
+2. Downloads sample videos into `assets/videos/` if not present
 
 To install manually without running the demo:
 
 ```bash
-./install.sh
+./install.sh                              # full demo + dx_stream (default)
+./install.sh --skip-dxstream              # demo only (dx_stream already present)
+./install.sh --dxstream-runtime-dir=PATH  # use a specific dx-runtime checkout
 ```
+
+### Installing dx_stream
+
+`install.sh` installs dx_stream by default via the official DeepX
+[dx-runtime](https://github.com/DEEPX-AI/dx-runtime) installer (it locates a
+dx-runtime checkout and runs it for you). To do it manually:
+
+```bash
+git clone --recurse-submodules https://github.com/DEEPX-AI/dx-runtime
+cd dx-runtime
+./install.sh --target=dx_stream
+```
+
+This provides the dx_stream plugin, `pydxs`, GStreamer, json-glib and (on
+RK3588) `librga`. Once installed, the plugin is registered with GStreamer
+(usually under `/usr/local/lib/<arch>/gstreamer-1.0`); run the demo as usual.
 
 ## Configuration
 
-Edit [`demo/config/yolov11_multich.yaml`](demo/config/yolov11_multich.yaml) to match your environment.
-
-### Configuration Options
+Edit [`demo/config/yolo11seg_multich.yaml`](demo/config/yolo11seg_multich.yaml)
+to match your environment.
 
 ```yaml
 # Model file path (DXNN format)
-model: "assets/models/yolo11s-seg_optim.dxnn"
+model: "assets/models/yolo26n-seg.dxnn"
 
-# Worker thread counts
-workers:
-  preprocess: 1   # Pre-processing workers
-  wait: 1         # Inference wait workers
-  postprocess: 2  # Post-processing workers
-  draw: 1         # Rendering workers
+# Inference backend. Only "dxstream" is supported (the legacy OpenCV backend
+# has been removed).
+engine_backend: "dxstream"
 
-# Input channel configuration (up to 4 channels)
+dxstream:
+  postprocess_library: "/usr/local/share/gstdxstream/lib/libpostprocess_yolo26seg.so"
+  postprocess_function: "PostProcess"
+  keep_ratio: true
+  pad_value: 114
+
+  # Render the segmentation overlay (masks + boxes) in the pipeline with the HW
+  # `dxosd` element (default true). Set false to deliver clean, un-overlaid
+  # frames.
+  osd: true
+
+  # NV12 -> RGB colour conversion for the display branch:
+  #   auto : RGA `dxconvert` when available, else CPU `videoconvert` (default)
+  #   rga  : force RGA `dxconvert` (warns + falls back to CPU if missing)
+  #   cpu  : force CPU `videoconvert`
+  color_convert: "auto"
+
+  # Pace each channel to its source video's native frame rate (appsink syncs to
+  # the buffer PTS). true -> smooth playback at the original fps, and the NPU/VPU
+  # do not waste work decoding faster than real time (default). false -> run flat
+  # out for max-throughput benchmarking.
+  sync_to_fps: true
+
+  # Display downscale (RGA `dxscale`): the frame delivered to Qt is resized to
+  # this resolution, so the GUI only handles small RGB tiles regardless of the
+  # source resolution (essential for 4K inputs, helpful for FHD). Detection
+  # boxes stay correct because they are read upstream in original-frame coords.
+  # Defaults to 960x540 when unset; set display_downscale: false to disable.
+  # display_downscale: true
+  # display_width: 960
+  # display_height: 540
+
+# Pin the demo's hot threads to an auto-detected CPU cluster:
+#   performance : the fastest cores (e.g. RK3588 A76 cpu4-7) - default
+#   efficiency  : the power-efficient cores (e.g. RK3588 A55 cpu0-3)
+#   none        : do not set CPU affinity
+cpu_affinity: "performance"
+
+# Rendering backend for the 2x2 tile display:
+#   auto : Mali GPU (OpenGL) when available, else CPU QPainter (default)
+#   gpu  : force GPU rendering (falls back to CPU if OpenGL is unavailable)
+#   cpu  : force CPU QPainter rendering
+render_backend: "auto"
+
+# Input channels (up to 4)
 channels:
-  - name: "ch1"               # Channel name
-    type: "video"             # Input type: video, rtsp, camera
-    source: "assets/videos/example.mov"  # Input source path
-    enabled: true             # Enable/disable channel
-    max_fps: 25              # Maximum FPS
-
-  - name: "ch2"
-    type: "rtsp"
-    source: "rtsp://192.168.1.100:8554/stream"
+  - name: "ch1"
+    type: "video"             # video | rtsp | camera
+    source: "assets/videos/cctv-city-road.mov"
     enabled: true
-    max_fps: 25
-
-  - name: "ch3"
-    type: "camera"
-    source: 0                 # Camera device index
-    enabled: false
-    max_fps: 25
 ```
 
 **Source value by input type:**
 - `video`: Path to a video file
-- `rtsp`: RTSP stream URL
+- `rtsp`: RTSP stream URL (e.g. `rtsp://user:pass@ip:port/stream`)
 - `camera`: Camera device index (0, 1, 2, ...)
+
+## Hardware acceleration
+
+The whole pipeline is hardware-accelerated on RK3588 (Orange Pi 5 Plus / RockPi):
+
+| Stage | Element | Hardware |
+|---|---|---|
+| Video decode | `mppvideodec` (auto-selected by `decodebin`) | VPU (MPP) |
+| Preprocess (letterbox/resize) | `dxpreprocess` | RGA |
+| Inference | `dxinfer` | NPU |
+| Display downscale | `dxscale` | RGA |
+| NV12 → RGB | `dxconvert` (`color_convert: auto`/`rga`) | RGA |
+| Tile compositing | `GLVideoWidget` (`render_backend: auto`/`gpu`) | Mali GPU |
+
+The negotiated decoder is logged at startup so you can confirm HW decode is
+active (e.g. `decoder: mppvideodec (HW)`); if `decodebin` ever falls back to a
+software decoder it is reported as `(SW)`.
+
+### Native-FPS (smooth) playback
+
+With `sync_to_fps: true` (default), the appsink presents buffers at their PTS,
+so each channel plays at its source's native frame rate rather than as fast as
+the VPU/NPU allow. Backpressure propagates upstream, so the decoder and NPU only
+do real-time work — smoother video and lower power. Set `sync_to_fps: false` for
+flat-out throughput benchmarking.
+
+### Resolution-agnostic display (4K ready)
+
+The display branch always downscales to `display_width` x `display_height`
+(default 960x540) on the RGA before handing frames to Qt, so the GUI cost is
+independent of the source resolution — FHD or 4K inputs are both handled. Set
+`display_downscale: false` to deliver full-resolution frames. Detections stay
+accurate because they are read upstream of `dxscale`, in original-frame
+coordinates, and the overlay maps them onto the downscaled tile.
+
+### CPU affinity
+
+At startup the demo reads `/sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq`
+to classify cores into **efficiency** (lowest max-freq) and **performance**
+(faster) clusters, then pins the process accordingly (`cpu_affinity` config).
+On RK3588 the A55 cores (cpu0-3, ~1.8 GHz) are the efficiency cluster and the
+A76 cores (cpu4-7, ~2.25-2.3 GHz) are the performance cluster — `performance`
+(default) pins to the A76s. It is a no-op on platforms without cpufreq sysfs.
 
 ## Running
 
@@ -87,37 +205,15 @@ channels:
 ./run_demo.sh
 ```
 
-## Performance Tuning
-
-The demo shows per-stage frame drop counters in the title bar. Use them to identify bottlenecks and adjust `workers:` counts in [`demo/config/yolov11_multich.yaml`](demo/config/yolov11_multich.yaml).
-
-![Drop example](img/drop_example_capture.png)
-
-> The screenshot above shows `input drop` increasing — this means the preprocess workers cannot keep up with the capture rate. Increase `workers.preprocess` to resolve this.
-
-| Drop counter | Bottleneck | Action |
-|---|---|---|
-| `input drop` | Preprocess workers are too slow | Increase `workers.preprocess` |
-| `infer drop` | Inference wait workers are too slow | Increase `workers.wait` |
-| `post drop` | Post-processing is too slow | Increase `workers.postprocess` |
-| `draw drop` | Rendering is too slow | Increase `workers.draw` |
-
-```yaml
-workers:
-  preprocess: 1   # increase if input drop is high
-  wait: 1         # increase if infer drop is high
-  postprocess: 2  # increase if post drop is high
-  draw: 1         # increase if draw drop is high
-```
-
-> Optimal values depend on your hardware (CPU cores, NPU throughput, number of active channels).
-
 ## Project Structure
 
-- `demo/main.py` - Qt GUI main application
-- `demo/engine.py` - YOLOv11 inference engine wrapper
-- `demo/workers.py` - Multi-threaded workers (capture / pre-process / post-process)
-- `demo/config/yolov11_multich.yaml` - Configuration file
-- `src/bindings/python/dx_postprocess/` - C++ post-processing Python bindings (`dx-postprocess-seg`)
+- `demo/main.py` - Qt GUI main application (CPU/GPU video widgets, orchestration)
+- `demo/native_pipeline.py` - Builds the dx_stream GStreamer launch string
+- `demo/stream_pipeline.py` - Runs one pipeline per channel, bridges to Qt
+- `demo/native_config.py` - Config loading / backend validation
+- `demo/cpu_affinity.py` - CPU cluster auto-detection and pinning
+- `demo/gst_utils.py` - GStreamer element availability check (no OpenCV)
+- `demo/meta_adapter.py` / `demo/pydxs_bridge.py` - pydxs detection read-back
+- `demo/config/yolo11seg_multich.yaml` - Configuration file
 - `assets/models/` - DXNN model files
 - `assets/videos/` - Test video files

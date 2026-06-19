@@ -62,7 +62,7 @@ setup_assets() {
 
     # Download model if not present
     print_colored "Checking model..." "INFO"
-    ./scripts/setup_yolo11s-seg_model.sh || { print_colored "Model download failed." "ERROR"; exit 1; }
+    ./scripts/setup_yolo26seg_model.sh || { print_colored "Model download failed." "ERROR"; exit 1; }
 
     SETUP_VIDEO_ARGS="--output=${VIDEO_PATH} --symlink_target_path=${DX_DEMO_PATH}/workspace/res/videos"
 
