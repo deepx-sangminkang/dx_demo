@@ -91,7 +91,7 @@ cd dx-runtime
 ## 설정
 
 환경에 맞게
-[`demo/config/yolo11seg_multich.yaml`](demo/config/yolo11seg_multich.yaml)을
+[`demo/config/yolo26seg_multich.yaml`](demo/config/yolo26seg_multich.yaml)을
 수정하세요.
 
 ```yaml
@@ -209,6 +209,6 @@ performance 클러스터이며, `performance`(기본)는 A76에 고정합니다.
 - `demo/cpu_affinity.py` - CPU 클러스터 자동 감지 및 고정
 - `demo/gst_utils.py` - GStreamer 엘리먼트 가용성 확인 (OpenCV 없음)
 - `demo/meta_adapter.py` / `demo/pydxs_bridge.py` - pydxs 검출 결과 읽기
-- `demo/config/yolo11seg_multich.yaml` - 설정 파일
+- `demo/config/yolo26seg_multich.yaml` - 설정 파일
 - `assets/models/` - DXNN 모델 파일
 - `assets/videos/` - 테스트 영상 파일

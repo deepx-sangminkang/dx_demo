@@ -88,7 +88,7 @@ RK3588) `librga`. Once installed, the plugin is registered with GStreamer
 
 ## Configuration
 
-Edit [`demo/config/yolo11seg_multich.yaml`](demo/config/yolo11seg_multich.yaml)
+Edit [`demo/config/yolo26seg_multich.yaml`](demo/config/yolo26seg_multich.yaml)
 to match your environment.
 
 ```yaml
@@ -214,6 +214,6 @@ A76 cores (cpu4-7, ~2.25-2.3 GHz) are the performance cluster — `performance`
 - `demo/cpu_affinity.py` - CPU cluster auto-detection and pinning
 - `demo/gst_utils.py` - GStreamer element availability check (no OpenCV)
 - `demo/meta_adapter.py` / `demo/pydxs_bridge.py` - pydxs detection read-back
-- `demo/config/yolo11seg_multich.yaml` - Configuration file
+- `demo/config/yolo26seg_multich.yaml` - Configuration file
 - `assets/models/` - DXNN model files
 - `assets/videos/` - Test video files

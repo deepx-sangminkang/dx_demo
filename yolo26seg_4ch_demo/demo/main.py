@@ -1063,7 +1063,7 @@ def load_config(path: str) -> Dict[str, Any]:
 
 def main() -> None:  # pragma: no cover - entry point
     base_dir = Path(__file__).resolve().parent
-    default_cfg = base_dir / "config" / "yolo11seg_multich.yaml"
+    default_cfg = base_dir / "config" / "yolo26seg_multich.yaml"
 
     if not default_cfg.exists():
         print(f"[ERROR] Config file not found: {default_cfg}")
