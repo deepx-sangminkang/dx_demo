@@ -58,35 +58,49 @@ python -c "import pydxs"        # pydxs 바인딩 임포트 확인
 ./run_demo.sh
 ```
 
-`run_demo.sh`는 시작 전에 누락된 항목을 자동으로 확인하고 설치합니다.
-1. 누락된 Python 의존성 설치 (`requirements.txt` — numpy, PySide6, PyYAML,
+`run_demo.sh`는 자동으로:
+1. dx_stream venv를 활성화합니다 (`install.sh --target=dx_stream`으로 설치됨)
+2. 누락된 Python 의존성을 설치합니다 (`requirements.txt` — numpy, PySide6, PyYAML,
    packaging; **OpenCV 없음**)
-2. `assets/videos/`에 샘플 영상이 없으면 다운로드
+3. `assets/videos/`에 샘플 영상, 모델 파일을 다운로드합니다 (없는 경우)
+4. 데모를 시작합니다
 
 데모를 실행하지 않고 수동 설치:
 
 ```bash
-./install.sh                              # 데모 전체 + dx_stream (기본)
-./install.sh --skip-dxstream              # 데모만 (dx_stream 이미 설치됨)
-./install.sh --dxstream-runtime-dir=PATH  # 특정 dx-runtime 체크아웃 사용
+./install.sh                                    # 전체 설치 (dxrt + dxstream + 데모)
+./install.sh --skip-dxrt                        # NPU 드라이버/RT/FW 건너뜀, dxstream + 데모 설치
+./install.sh --skip-dxstream                    # dxstream 건너뜀, dxrt + 데모 설치
+./install.sh --skip-dxrt --skip-dxstream        # 데모만 설치 (dxrt/dxstream 이미 설치됨)
+./install.sh --runtime-dir=/path/to/dx-runtime  # 커스텀 dx-runtime 경로 사용
+./install.sh -f                                 # 강제 재설치
 ```
 
-### dx_stream 설치
+### 설치 플래그
 
-`install.sh`는 공식 DeepX
-[dx-runtime](https://github.com/DEEPX-AI/dx-runtime) 설치 프로그램을 통해
-기본적으로 dx_stream을 설치합니다(dx-runtime 체크아웃을 찾아 대신 실행). 수동
-설치:
+| 플래그 | 설명 |
+|---|---|
+| `--runtime-dir=PATH` | 커스텀 dx-runtime 경로 (기본: `../dx-runtime`, 없으면 자동 clone) |
+| `--skip-dxrt` | NPU 드라이버/RT/FW 설치 건너뜀 (이미 설치됨) |
+| `--skip-dxstream` | dxstream 플러그인 + pydxs 설치 건너뜀 (이미 설치됨) |
+| `-f, --force` | 이미 설치된 경우도 강제 재설치 |
 
-```bash
-git clone --recurse-submodules https://github.com/DEEPX-AI/dx-runtime
-cd dx-runtime
-./install.sh --target=dx_stream
-```
+### install.sh의 동작
 
-이 과정에서 dx_stream 플러그인, `pydxs`, GStreamer, json-glib, (RK3588의 경우)
-`librga`가 제공됩니다. 설치되면 플러그인이 GStreamer에 등록되며(보통
-`/usr/local/lib/<arch>/gstreamer-1.0` 아래), 평소처럼 데모를 실행하면 됩니다.
+**Step 1: NPU 드라이버 / RT / FW** (`--skip-dxrt` 미지정 시)
+- `dxrt-cli -s` 체크; 실패하면 dx-runtime을 자동 clone하고 다음을 설치:
+  - `dx_rt_npu_linux_driver`
+  - `dx_rt`
+  - `dx_fw`
+
+**Step 2: dxstream + pydxs** (`--skip-dxstream` 미지정 시)
+- `gst-inspect-1.0 dxstream`과 `pip list | grep pydxs` 체크
+- 누락되면 dx-runtime을 자동 clone하고 `dx_stream` 설치 (`--sanity-check=n` 옵션)
+- venv를 활성화하고 설치 확인
+
+**Step 3: Python 의존성 + 에셋**
+- `pip install -r requirements.txt`
+- `./setup.sh` (모델 및 샘플 영상 다운로드)
 
 ## 설정
 

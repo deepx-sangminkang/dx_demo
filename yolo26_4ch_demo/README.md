@@ -56,34 +56,49 @@ Run the demo with:
 ./run_demo.sh
 ```
 
-`run_demo.sh` automatically checks and installs what is missing before starting:
-1. Installs any missing Python dependencies (`requirements.txt` — numpy,
+`run_demo.sh` automatically:
+1. Activates the dx_stream venv (installed by `install.sh --target=dx_stream`)
+2. Installs any missing Python dependencies (`requirements.txt` — numpy,
    PySide6, PyYAML, packaging; **no OpenCV**)
-2. Downloads sample videos into `assets/videos/` if not present
+3. Downloads sample videos into `assets/videos/` and model files if not present
+4. Starts the demo
 
 To install manually without running the demo:
 
 ```bash
-./install.sh                              # full demo + dx_stream (default)
-./install.sh --skip-dxstream              # demo only (dx_stream already present)
-./install.sh --dxstream-runtime-dir=PATH  # use a specific dx-runtime checkout
+./install.sh                                    # full install (dxrt + dxstream + demo)
+./install.sh --skip-dxrt                        # skip NPU driver/RT/FW, install dxstream + demo
+./install.sh --skip-dxstream                    # skip dxstream, install dxrt + demo
+./install.sh --skip-dxrt --skip-dxstream        # demo only (both dxrt and dxstream already present)
+./install.sh --runtime-dir=/path/to/dx-runtime  # use a custom dx-runtime checkout
+./install.sh -f                                 # force reinstall
 ```
 
-### Installing dx_stream
+### Install flags
 
-`install.sh` installs dx_stream by default via the official DeepX
-[dx-runtime](https://github.com/DEEPX-AI/dx-runtime) installer (it locates a
-dx-runtime checkout and runs it for you). To do it manually:
+| Flag | Description |
+|---|---|
+| `--runtime-dir=PATH` | Custom dx-runtime path (default: `../dx-runtime`, auto-cloned if missing) |
+| `--skip-dxrt` | Skip NPU driver/RT/FW installation (already present) |
+| `--skip-dxstream` | Skip dxstream plugin + pydxs installation (already present) |
+| `-f, --force` | Reinstall even if already present |
 
-```bash
-git clone --recurse-submodules https://github.com/DEEPX-AI/dx-runtime
-cd dx-runtime
-./install.sh --target=dx_stream
-```
+### What install.sh does
 
-This provides the dx_stream plugin, `pydxs`, GStreamer, json-glib and (on
-RK3588) `librga`. Once installed, the plugin is registered with GStreamer
-(usually under `/usr/local/lib/<arch>/gstreamer-1.0`); run the demo as usual.
+**Step 1: NPU driver / RT / FW** (unless `--skip-dxrt`)
+- Checks `dxrt-cli -s`; if it fails, auto-clones dx-runtime and installs:
+  - `dx_rt_npu_linux_driver`
+  - `dx_rt`
+  - `dx_fw`
+
+**Step 2: dxstream + pydxs** (unless `--skip-dxstream`)
+- Checks `gst-inspect-1.0 dxstream` and `pip list | grep pydxs`
+- If missing, auto-clones dx-runtime and installs `dx_stream` (with `--sanity-check=n`)
+- Activates venv and verifies installation
+
+**Step 3: Python dependencies + assets**
+- `pip install -r requirements.txt`
+- `./setup.sh` (downloads model and sample videos)
 
 ## Configuration
 
