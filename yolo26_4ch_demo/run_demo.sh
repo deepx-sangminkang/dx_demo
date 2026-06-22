@@ -2,11 +2,26 @@
 SCRIPT_DIR=$(realpath "$(dirname "$0")")
 pushd "$SCRIPT_DIR" > /dev/null
 
-# Make the dx_stream GStreamer plugin discoverable for the dxstream backend,
-# if install_dxstream.sh has been run (no-op for the legacy backend).
-if [ -f "scripts/.dxstream_env.sh" ]; then
-    # shellcheck disable=SC1091
-    source "scripts/.dxstream_env.sh"
+RUNTIME_DIR="${DX_RUNTIME_DIR:-$(dirname "$SCRIPT_DIR")/dx-runtime}"
+DEMO_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --runtime-dir=*) RUNTIME_DIR="${1#*=}"; shift ;;
+        --runtime-dir)   RUNTIME_DIR="$2"; shift 2 ;;
+        *) DEMO_ARGS+=("$1"); shift ;;
+    esac
+done
+
+# Activate dx_stream venv (installed by install.sh --target=dx_stream)
+VENV="${RUNTIME_DIR}/dx_stream/venv-dx_stream/bin/activate"
+if [ -f "$VENV" ]; then
+    echo "[INFO] Using venv: ${VENV}"
+    # shellcheck disable=SC1090
+    source "$VENV"
+else
+    echo "[WARN] venv not found: ${VENV}"
+    echo "[WARN] Run ./install.sh first to install dx_stream."
 fi
 
 # Install missing Python dependencies from requirements.txt
@@ -22,5 +37,5 @@ if [ ! -f "assets/models/yolo26n-1.dxnn" ] || [ ! "$(ls -A assets/videos/ 2>/dev
 fi
 
 echo "[INFO] Starting demo..."
-python -m demo.main "$@"
+python -m demo.main "${DEMO_ARGS[@]}"
 popd > /dev/null

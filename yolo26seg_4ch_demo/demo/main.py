@@ -730,7 +730,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 + "\n  - ".join(missing)
                 + "\n\nInstall dx_stream + pydxs on this machine and ensure the "
                 "GStreamer plugins are on GST_PLUGIN_PATH (e.g. "
-                "./install.sh or ./scripts/install_dxstream.sh)."
+                "./install.sh)."
             )
 
         # Lightweight overlay metadata (no NPU load in Python).
