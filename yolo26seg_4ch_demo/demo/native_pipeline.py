@@ -50,6 +50,10 @@ class InferCfg:
 
     inference_id: int = 1
     model_path: str = ""
+    # Use native DeepX NPU API (false) instead of ONNX Runtime (true).
+    # dxinfer defaults use-ort to true; explicitly setting false bypasses ORT
+    # overhead and runs inference directly on the NPU via the DeepX runtime.
+    use_ort: bool = False
 
 
 @dataclass
@@ -92,7 +96,8 @@ def _preprocess_element(cfg: PreprocessCfg) -> str:
 def _infer_element(cfg: InferCfg, preprocess_id: int) -> str:
     return (
         f"dxinfer preprocess-id={preprocess_id} "
-        f"inference-id={cfg.inference_id} model-path={cfg.model_path}"
+        f"inference-id={cfg.inference_id} model-path={cfg.model_path} "
+        f"use-ort={'true' if cfg.use_ort else 'false'}"
     )
 
 

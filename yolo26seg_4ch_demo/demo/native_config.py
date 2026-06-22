@@ -51,7 +51,11 @@ def build_native_cfgs(
         keep_ratio=bool(dxs.get("keep_ratio", True)),
         pad_value=int(dxs.get("pad_value", 114)),
     )
-    inf = InferCfg(inference_id=ident, model_path=str(model_path))
+    inf = InferCfg(
+        inference_id=ident,
+        model_path=str(model_path),
+        use_ort=bool(dxs.get("use_ort", False)),
+    )
     post = PostprocessCfg(
         inference_id=ident,
         library_file_path=str(library),

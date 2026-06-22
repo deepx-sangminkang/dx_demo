@@ -18,6 +18,11 @@ dxstream:
   keep_ratio: true
   pad_value: 114
 
+  # Use native DeepX NPU runtime instead of ONNX Runtime for inference.
+  # dxinfer defaults use-ort to true; false bypasses ORT overhead and uses the
+  # DeepX native API directly, matching the dx_stream reference pipeline.
+  use_ort: false
+
   # Render the segmentation overlay (masks + boxes) in the GStreamer pipeline
   # with the HW `dxosd` element, exactly like the dx_stream run_yolo26n-seg.sh
   # reference pipeline. The masks are baked into the frames before they reach
@@ -30,7 +35,7 @@ dxstream:
   #          `videoconvert` (default).
   #   rga  : force RGA `dxconvert` (falls back to CPU with a warning if missing).
   #   cpu  : force CPU `videoconvert`.
-  color_convert: "auto"
+  color_convert: "rga"
 
   # Pace each channel to its source video's native frame rate. Pacing is done
   # in Python (backpressure in the appsink streaming thread), so it stays smooth
@@ -54,7 +59,7 @@ dxstream:
 #   performance : the fastest cores (e.g. RK3588 A76 cpu4-7) - default.
 #   efficiency  : the power-efficient cores (e.g. RK3588 A55 cpu0-3).
 #   none        : do not set CPU affinity.
-cpu_affinity: "performance"
+cpu_affinity: "none"
 
 # Lock the CPU/GPU clocks high at startup so playback is smooth from the very
 # first frame. RK3588 boots with ondemand-style DVFS governors that idle the
@@ -76,7 +81,7 @@ startup_warmup_sec: 6.0
 #   auto   : use the Mali GPU (OpenGL) when available, else CPU QPainter (default)
 #   gpu    : force GPU rendering (falls back to CPU if OpenGL is unavailable)
 #   cpu    : force CPU QPainter rendering
-render_backend: "auto"
+render_backend: "gpu"
 
 channels:
   - name: "ch1"

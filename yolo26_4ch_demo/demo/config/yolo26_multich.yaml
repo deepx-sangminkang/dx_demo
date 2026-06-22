@@ -46,7 +46,7 @@ dxstream:
 #   performance : the fastest cores (e.g. RK3588 A76 cpu4-7) - default.
 #   efficiency  : the power-efficient cores (e.g. RK3588 A55 cpu0-3).
 #   none        : do not set CPU affinity.
-cpu_affinity: "performance"
+cpu_affinity: "none"
 
 # Lock the CPU/GPU clocks high at startup so playback is smooth from the very
 # first frame. RK3588 boots with ondemand-style DVFS governors that idle the
