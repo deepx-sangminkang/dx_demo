@@ -16,7 +16,7 @@ A collection of demo applications for DEEPX NPU inference.
 
 ![DX-CLIP Demo Screenshot](img/dx-clip-demo_screenshot.png)
 
-### YOLOv11 Segmentation 4-Channel Demo
+### YOLO26 Segmentation 4-Channel Demo
 
 ![YOLO26 Segmentation 4-Channel Demo Screenshot](yolo26seg_4ch_demo/img/yolo26seg_demoplay.gif)
 
