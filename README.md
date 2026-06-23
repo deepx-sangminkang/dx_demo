@@ -52,5 +52,7 @@ If either fails, install dx_stream first (see each demo's `README.md` for instru
 ## Demo Details
 
 - **[dx_clip_demo](https://github.com/DEEPX-AI/dx_clip_demo)** — Real-time text-video similarity matching using the CLIP model accelerated on DeepX NPU. Supports up to 16 video channels, camera input, and configurable GUI options.
-- **[yolo26seg_4ch_demo](yolo26seg_4ch_demo/README.md)** — Uses a C++ Python binding (`dx_postprocess`) to accelerate pixel-level mask overlay operations for real-time multi-channel segmentation.
-- **[yolo26_4ch_demo](yolo26_4ch_demo/README.md)** — Features a class list panel in the Qt GUI with per-class checkboxes to toggle BBOX display individually. Uses the YOLO26 detection model.
+
+- **[yolo26seg_4ch_demo](yolo26seg_4ch_demo/README.md)** — Multi-channel instance segmentation demo built entirely on **dx_stream** (native GStreamer, no OpenCV). Each channel runs a hardware-accelerated pipeline: VPU decode → RGA preprocess → NPU inference (YOLO26-seg) → RGA downscale → `dxosd` HW mask/box overlay → RGB conversion → Qt 2×2 tile compositing. Supports video/RTSP/camera inputs, native-FPS playback, and resolution-agnostic display (4K ready).
+
+- **[yolo26_4ch_demo](yolo26_4ch_demo/README.md)** — Multi-channel object detection demo built entirely on **dx_stream** (native GStreamer, no OpenCV). Each channel runs a hardware-accelerated pipeline: VPU decode → RGA preprocess → NPU inference (YOLO26) → RGA downscale → RGB conversion → Qt 2×2 tile compositing. Qt GUI includes a class list panel with per-class checkboxes to toggle BBOX display. Supports video/RTSP/camera inputs, native-FPS playback, and resolution-agnostic display (4K ready).
