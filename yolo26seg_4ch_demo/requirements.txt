@@ -1,0 +1,10 @@
+# Requirements for YOLO26 multi-channel Qt demo
+# - DX-related packages and dx_stream (GStreamer plugin + pydxs) are provided by
+#   the DX-RT / dx-runtime installation, not via PyPI.
+# - The demo is dx_stream-only and does NOT depend on OpenCV.
+# - Only PyPI-installable packages are listed here.
+
+numpy>=1.19.5
+packaging>=20.0
+PySide6>=6.5.0
+PyYAML>=6.0
