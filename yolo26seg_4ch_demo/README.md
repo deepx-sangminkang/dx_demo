@@ -10,7 +10,7 @@ front end composites the four overlaid streams into a 2x2 grid.
 
 ## Screenshot
 
-![YOLO26 Segmentation Demo Screenshot](img/yolo26_4ch_demo_screenshot.png)
+![YOLO26 Segmentation Demo Screenshot](img/yolo26seg_demoplay.gif)
 
 ## Architecture
 

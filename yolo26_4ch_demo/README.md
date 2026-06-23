@@ -10,7 +10,7 @@ entirely on **dx_stream** (native GStreamer). There is **no OpenCV dependency**.
 
 ## Screenshot
 
-![YOLO26 Demo Screenshot](img/yolo26_4ch_demo_screenshot.png)
+![YOLO26 Demo Screenshot](img/yolo26_demoplay.gif)
 
 ## Architecture
 
