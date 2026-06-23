@@ -18,20 +18,36 @@ A collection of demo applications for DEEPX NPU inference.
 
 ### YOLOv11 Segmentation 4-Channel Demo
 
-![YOLOv11 Segmentation 4-Channel Demo Screenshot](yolo26seg_4ch_demo/img/yolov11seg_4ch_demo_screenshot.png)
+![YOLO26 Segmentation 4-Channel Demo Screenshot](yolo26seg_4ch_demo/img/yolo26seg_demoplay.gif)
 
 ### YOLO26 4-Channel Demo
 
-![YOLO26 4-Channel Demo Screenshot](yolo26_4ch_demo/img/yolo26_4ch_demo_screenshot.png)
+![YOLO26 4-Channel Demo Screenshot](yolo26_4ch_demo/img/yolo26_demoplay.gif)
 
 ## Prerequisites
 
-All demos require **DX-RT** (DeepX Runtime) to be built and installed before use.
+### dx_clip_demo
+
+Requires **DX-RT** (DeepX Runtime) to be built and installed.
 
 ```python
 # Verify DX-RT is available
 import dx_engine
 ```
+
+### yolo26_4ch_demo / yolo26seg_4ch_demo
+
+Requires **dx_stream** (GStreamer plugin) and **pydxs** Python bindings in the venv.
+
+```bash
+# Verify dx_stream GStreamer plugin is registered
+gst-inspect-1.0 dxinfer
+
+# Verify pydxs is importable in the venv
+python -c "import pydxs"
+```
+
+If either fails, install dx_stream first (see each demo's `README.md` for instructions). The venv activated by `run_demo.sh` must have `pydxs` installed.
 
 ## Demo Details
 
