@@ -1,0 +1,50 @@
+[
+{
+  "directory": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/build_x86_64",
+  "command": "/usr/bin/c++ -DHAVE_OPENCV_FREETYPE -DPROJECT_ROOT_DIR=\\\"/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo\\\" -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/demo_utils/include -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/include -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/extern -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/lib -isystem /usr/include/opencv4 -O3 -DNDEBUG -std=gnu++14 -W -Wall -pthread -fstrict-volatile-bitfields -fPIC -march=native -fopenmp -g -rdynamic -o CMakeFiles/yolo_multi_demo.dir/src/demo_utils/yolo_cfg.cpp.o -c /home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/demo_utils/yolo_cfg.cpp",
+  "file": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/demo_utils/yolo_cfg.cpp",
+  "output": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/build_x86_64/CMakeFiles/yolo_multi_demo.dir/src/demo_utils/yolo_cfg.cpp.o"
+},
+{
+  "directory": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/build_x86_64",
+  "command": "/usr/bin/c++ -DHAVE_OPENCV_FREETYPE -DPROJECT_ROOT_DIR=\\\"/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo\\\" -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/demo_utils/include -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/include -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/extern -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/lib -isystem /usr/include/opencv4 -O3 -DNDEBUG -std=gnu++14 -W -Wall -pthread -fstrict-volatile-bitfields -fPIC -march=native -fopenmp -g -rdynamic -o CMakeFiles/yolo_multi_demo.dir/src/demo_utils/yolo.cpp.o -c /home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/demo_utils/yolo.cpp",
+  "file": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/demo_utils/yolo.cpp",
+  "output": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/build_x86_64/CMakeFiles/yolo_multi_demo.dir/src/demo_utils/yolo.cpp.o"
+},
+{
+  "directory": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/build_x86_64",
+  "command": "/usr/bin/c++ -DHAVE_OPENCV_FREETYPE -DPROJECT_ROOT_DIR=\\\"/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo\\\" -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/demo_utils/include -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/include -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/extern -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/lib -isystem /usr/include/opencv4 -O3 -DNDEBUG -std=gnu++14 -W -Wall -pthread -fstrict-volatile-bitfields -fPIC -march=native -fopenmp -g -rdynamic -o CMakeFiles/yolo_multi_demo.dir/src/demo_utils/nms.cpp.o -c /home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/demo_utils/nms.cpp",
+  "file": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/demo_utils/nms.cpp",
+  "output": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/build_x86_64/CMakeFiles/yolo_multi_demo.dir/src/demo_utils/nms.cpp.o"
+},
+{
+  "directory": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/build_x86_64",
+  "command": "/usr/bin/c++ -DHAVE_OPENCV_FREETYPE -DPROJECT_ROOT_DIR=\\\"/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo\\\" -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/demo_utils/include -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/include -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/extern -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/lib -isystem /usr/include/opencv4 -O3 -DNDEBUG -std=gnu++14 -W -Wall -pthread -fstrict-volatile-bitfields -fPIC -march=native -fopenmp -g -rdynamic -o CMakeFiles/yolo_multi_demo.dir/src/demo_utils/bbox.cpp.o -c /home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/demo_utils/bbox.cpp",
+  "file": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/demo_utils/bbox.cpp",
+  "output": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/build_x86_64/CMakeFiles/yolo_multi_demo.dir/src/demo_utils/bbox.cpp.o"
+},
+{
+  "directory": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/build_x86_64",
+  "command": "/usr/bin/c++ -DHAVE_OPENCV_FREETYPE -DPROJECT_ROOT_DIR=\\\"/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo\\\" -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/demo_utils/include -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/include -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/extern -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/lib -isystem /usr/include/opencv4 -O3 -DNDEBUG -std=gnu++14 -W -Wall -pthread -fstrict-volatile-bitfields -fPIC -march=native -fopenmp -g -rdynamic -o CMakeFiles/yolo_multi_demo.dir/src/demo_utils/image.cpp.o -c /home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/demo_utils/image.cpp",
+  "file": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/demo_utils/image.cpp",
+  "output": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/build_x86_64/CMakeFiles/yolo_multi_demo.dir/src/demo_utils/image.cpp.o"
+},
+{
+  "directory": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/build_x86_64",
+  "command": "/usr/bin/c++ -DHAVE_OPENCV_FREETYPE -DPROJECT_ROOT_DIR=\\\"/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo\\\" -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/demo_utils/include -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/include -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/extern -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/lib -isystem /usr/include/opencv4 -O3 -DNDEBUG -std=gnu++14 -W -Wall -pthread -fstrict-volatile-bitfields -fPIC -march=native -fopenmp -g -rdynamic -o CMakeFiles/yolo_multi_demo.dir/src/demo_utils/display.cpp.o -c /home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/demo_utils/display.cpp",
+  "file": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/demo_utils/display.cpp",
+  "output": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/build_x86_64/CMakeFiles/yolo_multi_demo.dir/src/demo_utils/display.cpp.o"
+},
+{
+  "directory": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/build_x86_64",
+  "command": "/usr/bin/c++ -DHAVE_OPENCV_FREETYPE -DPROJECT_ROOT_DIR=\\\"/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo\\\" -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/demo_utils/include -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/include -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/extern -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/lib -isystem /usr/include/opencv4 -O3 -DNDEBUG -std=gnu++14 -W -Wall -pthread -fstrict-volatile-bitfields -fPIC -march=native -fopenmp -g -rdynamic -o CMakeFiles/yolo_multi_demo.dir/src/od.cpp.o -c /home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/od.cpp",
+  "file": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/od.cpp",
+  "output": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/build_x86_64/CMakeFiles/yolo_multi_demo.dir/src/od.cpp.o"
+},
+{
+  "directory": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/build_x86_64",
+  "command": "/usr/bin/c++ -DHAVE_OPENCV_FREETYPE -DPROJECT_ROOT_DIR=\\\"/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo\\\" -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/demo_utils/include -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/include -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/extern -I/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/lib -isystem /usr/include/opencv4 -O3 -DNDEBUG -std=gnu++14 -W -Wall -pthread -fstrict-volatile-bitfields -fPIC -march=native -fopenmp -g -rdynamic -o CMakeFiles/yolo_multi_demo.dir/src/yolo_multi_channels.cpp.o -c /home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/yolo_multi_channels.cpp",
+  "file": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/src/yolo_multi_channels.cpp",
+  "output": "/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/build_x86_64/CMakeFiles/yolo_multi_demo.dir/src/yolo_multi_channels.cpp.o"
+}
+]

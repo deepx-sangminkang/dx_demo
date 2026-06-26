@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/sangminkang/workspace/dx_demo_internal/yolo_multi_demo/build_x86_64/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
